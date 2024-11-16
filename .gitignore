@@ -1,4 +1,5 @@
 *.pyc
 data/
 __pycache__/
-
+*.pth
+*.mp4

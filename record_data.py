@@ -15,7 +15,7 @@ from metadrive.utils import clip, Config
 from metadrive.utils import generate_gif
 import numpy as np
 import pickle
-import os
+import os, random
 import tqdm
 sensor_size = (200, 66)
 
@@ -36,6 +36,10 @@ cfg=dict(image_observation=True,
         # TRAFFIC
         traffic_mode=TrafficMode.Trigger,
         traffic_density=0.1,
+
+        # RANDOMIZATION
+        num_scenarios=1000,
+        start_seed=random.randint(0, 1000), # random seed (it's saved in the config.pkl)
 )
 
 if __name__ == "__main__":
@@ -70,14 +74,13 @@ if __name__ == "__main__":
             ret=ret.astype(np.uint8)
 
             # save image
-            cv2.imwrite(os.path.join(curr_session, img_path:=(f"img_{i}.png".rjust(5, '0'))), ret)
+            cv2.imwrite(img_path:=os.path.join(curr_session, f"img_{i}.png"), ret)
 
-            # update data
-            data.loc[i] = [img_path, 0, 1]
+            # update data (steer, throttle)
+            data.loc[i] = [img_path, *info["action"]]
 
             if terminated: # keep on going to get to 1000 samples
                 env.reset()
-        # generate_gif(frames[-300:-50])
     finally:
         # save data
         data.to_csv(data_csv, index=False)
