@@ -21,6 +21,8 @@ class Data():
             data_csv = os.path.join(path, folder, "data.csv")
             if os.path.exists(data_csv):
                 data.append(pd.read_csv(data_csv))
+        if len(data) == 0:
+            raise ValueError("No data found")
 
         self.data = pd.concat(data)
 
@@ -122,11 +124,17 @@ def test_model(model_pth, data_pth):
 
     plt.show()
 
+def count_n_data():
+    data = Data(load=False)
+    print(f"Number of data: {len(data)}")
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args[0] == "viz":
         data_viz(*args[1:])
     elif args[0] == "test":
         test_model(*args[1:])
+    elif args[0] == "count":
+        count_n_data()
     else:
         raise ValueError("Invalid command")
