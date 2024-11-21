@@ -1,5 +1,7 @@
 *.pyc
 data/
+test/
+tmp/
 __pycache__/
 *.pth
 *.mp4
