@@ -6,6 +6,7 @@ import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
 from torchvision import transforms
+from tqdm import tqdm
 
 import sys, time
 
@@ -56,7 +57,7 @@ class Data():
         train_x = torch.Tensor(len(train_data), 3, 66, 200) # NOTE: hardcoded image size
         train_y = torch.Tensor(len(train_data), 2)
         
-        for i, (image_path, throttle, steer) in enumerate(train_data.values):
+        for i in tqdm(range(len(train_data)), desc="Loading Train Data"):
             image, actuation = self.__getitem__(i)
             train_x[i] = image
             train_y[i] = actuation
@@ -64,7 +65,7 @@ class Data():
         val_x = torch.Tensor(len(val_data), 3, 66, 200) # NOTE: hardcoded image size
         val_y = torch.Tensor(len(val_data), 2)
 
-        for i, (image_path, throttle, steer) in enumerate(val_data.values):
+        for i in tqdm(range(len(val_data)), desc="Loading Val Data"):
             image, actuation = self.__getitem__(i)
             val_x[i] = image
             val_y[i] = actuation
@@ -83,11 +84,11 @@ def data_viz(save_path="data.mp4"):
     clip = ImageSequenceClip(images, fps=30)
     clip.write_videofile(save_path)
 
-def test_model(model_pth="model.pth", data_path="data"):
+def test_model(model_pth, data_pth):
     model = PilotNet()
     model.load_state_dict(torch.load(model_pth))
     model.eval()
-    data = Data(data_path)
+    data = Data(data_pth)
 
     true_y_steer = []
     true_y_throttle = []

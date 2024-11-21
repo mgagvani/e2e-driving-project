@@ -19,6 +19,15 @@ import os, random
 import tqdm
 sensor_size = (200, 66)
 
+# generate map string. 
+'''
+C: Circular
+S: Straight
+'''
+N = 8
+map_str = "".join(random.sample(["C", "S"], k=N, counts=[N*10, N] ))
+print("Map string: ", map_str)
+
 cfg=dict(image_observation=True, 
         # OBSERVATION
         vehicle_config=dict(image_source="rgb_camera"),
@@ -27,7 +36,7 @@ cfg=dict(image_observation=True,
         agent_policy=ExpertPolicy, # drive with IDM policy
 
         # PROCEDURAL GENERATION MAP
-        map="CCCCC",
+        map=map_str,
         block_dist_config=PGBlockDistConfig,
         random_lane_width=True,
         random_lane_num=True,
@@ -35,7 +44,7 @@ cfg=dict(image_observation=True,
 
         # TRAFFIC
         traffic_mode=TrafficMode.Trigger,
-        traffic_density=0.1,
+        traffic_density=0.025,
 
         # RANDOMIZATION
         num_scenarios=1000,
@@ -65,7 +74,7 @@ if __name__ == "__main__":
 
     try:
         env.reset()
-        for i in tqdm.tqdm(range(1000)):
+        for i in tqdm.tqdm(range(2000)):
             # simulation
             obs, rew, terminated, truncated, info = env.step([0, 1])
             # print(info)

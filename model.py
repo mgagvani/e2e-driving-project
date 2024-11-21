@@ -5,8 +5,7 @@ import torch.optim as optim
 from torchvision import transforms
 from tqdm import tqdm
 import pandas as pd
-from PIL import Image
-
+import matplotlib.pyplot as plt
 class PilotNet(nn.Module):
     def __init__(self):
         super().__init__()
@@ -48,6 +47,7 @@ if __name__ == "__main__":
     criterion = nn.MSELoss()
 
     losses = []
+    best_loss = float("inf")
     for epoch in tqdm(range(20), desc="Epoch"):
         for i in tqdm(range(len(train_x)), desc="Train", leave=False):
             optimizer.zero_grad()
@@ -60,11 +60,17 @@ if __name__ == "__main__":
             for i in tqdm(range(len(val_x)), desc="Val", leave=False):
                 out = model(val_x[i].unsqueeze(0))
                 loss = criterion(out, val_y[i].unsqueeze(0))
-                losses.append(loss.item())
+            losses.append(loss.item())
+            if loss < best_loss:
+                best_loss = loss
+                print(f"Saving model with loss {loss.item()}")
+                torch.save(model.state_dict(), "model.pth")
 
         print(f"Epoch {epoch}, Loss: {loss.item()}")
 
-    torch.save(model.state_dict(), "model.pth")
-
     # plot losses
-    pd.Series(losses).plot()
+    plt.plot(range(len(losses)), losses)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.show()
+
