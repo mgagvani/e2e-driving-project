@@ -17,6 +17,10 @@ class Data():
     def __init__(self, path="data", load=True):
         # find all folders, get data.csv
         data = []
+        try: # NOTE: Error check 1
+            os.listdir(path)
+        except FileNotFoundError:
+            path = input("Error - wrong path. Enter the path to the data folder: ")
         for folder in os.listdir(path):
             data_csv = os.path.join(path, folder, "data.csv")
             if os.path.exists(data_csv):
@@ -38,7 +42,7 @@ class Data():
     def __getitem__(self, idx):   
         image_path, throttle, steer = self.data.iloc[idx]
         if self.load_from_disk:
-            image = cv2.imread(image_path)
+            image = cv2.imread(image_path) # NOTE: READING A FILE
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(image)
             image = self.transform(image)
@@ -88,7 +92,10 @@ def data_viz(save_path="data.mp4"):
 
 def test_model(model_pth, data_pth):
     model = PilotNet()
-    model.load_state_dict(torch.load(model_pth))
+    try:
+        model.load_state_dict(torch.load(model_pth))
+    except: # NOTE: Error check 2
+        model.load_state_dict(torch.load(input("Error - wrong path. Enter the path to the model.pth: ")))
     model.eval()
     data = Data(data_pth)
 
@@ -129,10 +136,10 @@ def count_n_data():
     print(f"Number of data: {len(data)}")
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
+    args = sys.argv[1:] # NOTE: 3 different user-defined functions
     if args[0] == "viz":
         data_viz(*args[1:])
-    elif args[0] == "test":
+    elif args[0] == "test": # NOTE: If-elif-else structure
         test_model(*args[1:])
     elif args[0] == "count":
         count_n_data()

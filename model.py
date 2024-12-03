@@ -48,7 +48,7 @@ if __name__ == "__main__":
 
     losses = []
     best_loss = float("inf")
-    for epoch in tqdm(range(20), desc="Epoch"):
+    for epoch in tqdm(range(5), desc="Epoch"): # NOTE: Nested structure
         for i in tqdm(range(len(train_x)), desc="Train", leave=False):
             optimizer.zero_grad()
             out = model(train_x[i].unsqueeze(0))

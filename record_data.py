@@ -74,7 +74,7 @@ if __name__ == "__main__":
 
     try:
         env.reset()
-        for i in tqdm.tqdm(range(2000)):
+        for i in tqdm.tqdm(range(250)):
             # simulation
             obs, rew, terminated, truncated, info = env.step([0, 1])
             # print(info)
