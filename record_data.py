@@ -4,6 +4,7 @@ import cv2
 import pandas as pd
 import time
 from metadrive.policy.expert_policy import ExpertPolicy
+from metadrive.policy.idm_policy import IDMPolicy
 from metadrive.component.algorithm.blocks_prob_dist import PGBlockDistConfig
 from metadrive.component.map.base_map import BaseMap
 from metadrive.component.map.pg_map import parse_map_config, MapGenerateMethod
@@ -33,7 +34,7 @@ cfg=dict(image_observation=True,
         vehicle_config=dict(image_source="rgb_camera"),
         sensors={"rgb_camera": (RGBCamera, *sensor_size)},
         stack_size=3,
-        agent_policy=ExpertPolicy, # drive with IDM policy
+        agent_policy=IDMPolicy, # drive with IDM policy
 
         # PROCEDURAL GENERATION MAP
         map=map_str,
@@ -74,7 +75,7 @@ if __name__ == "__main__":
 
     try:
         env.reset()
-        for i in tqdm.tqdm(range(2000)):
+        for i in tqdm.tqdm(range(10000)):
             # simulation
             obs, rew, terminated, truncated, info = env.step([0, 1])
             # print(info)

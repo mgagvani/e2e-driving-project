@@ -57,6 +57,10 @@ class Data():
         train_x = torch.Tensor(len(train_data), 3, 66, 200) # NOTE: hardcoded image size
         train_y = torch.Tensor(len(train_data), 2)
         
+        # NOTE: there may be a bug here. if we are __getitem__(i),
+        # then, we are doing self.data.iloc[i] which is not shuffled
+        # so, we might as well not have shuffled in the first place
+        # this could be fixed by getting indices and shuffling them.
         for i in tqdm(range(len(train_data)), desc="Loading Train Data"):
             image, actuation = self.__getitem__(i)
             train_x[i] = image

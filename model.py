@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     model = PilotNet()
     model.train()
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.MSELoss()
 
     losses = []
