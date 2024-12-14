@@ -34,7 +34,7 @@ cfg=dict(image_observation=True,
         vehicle_config=dict(image_source="rgb_camera"),
         sensors={"rgb_camera": (RGBCamera, *sensor_size)},
         stack_size=3,
-        agent_policy=IDMPolicy, # drive with IDM policy
+        agent_policy=ExpertPolicy, # drive with IDM policy
 
         # PROCEDURAL GENERATION MAP
         map=map_str,
@@ -55,8 +55,8 @@ cfg=dict(image_observation=True,
 if __name__ == "__main__":
     env=MetaDriveEnv(cfg)
 
-    # data collection in data/ 
-    data_path = "data"
+    # data collection in data/ (scratch)
+    data_path = "/scratch/gilbreth/mgagvani/data"
     if not os.path.exists(data_path):
         os.makedirs(data_path)
         

@@ -1,0 +1,25 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:1 
+#SBATCH --cpus-per-task=12
+#SBATCH --time=00:15:00
+#SBATCH -A ziran-n
+#SBATCH -J e2e_train
+
+module purge
+module load anaconda
+module load cuda
+module load cudnn
+module load use.own
+module list
+
+/home/mgagvani/.conda/envs/e2e_proj/bin/python --version
+
+echo $PYTHONPATH
+cd $SLURM_SUBMIT_DIR
+
+date
+/home/mgagvani/.conda/envs/e2e_proj/bin/python model.py
+date

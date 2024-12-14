@@ -1,4 +1,4 @@
-from moviepy.editor import ImageSequenceClip
+from moviepy import ImageSequenceClip
 import os
 import pandas as pd
 import torch
@@ -14,7 +14,7 @@ from model import PilotNet
 
 
 class Data():
-    def __init__(self, path="data", load=True):
+    def __init__(self, path="/scratch/gilbreth/mgagvani/data", load=True):
         # find all folders, get data.csv
         data = []
         for folder in os.listdir(path):
@@ -54,6 +54,8 @@ class Data():
         train_data = data.iloc[:split]
         val_data = data.iloc[split:]
 
+        # cuda tensors
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         train_x = torch.Tensor(len(train_data), 3, 66, 200) # NOTE: hardcoded image size
         train_y = torch.Tensor(len(train_data), 2)
         
@@ -61,7 +63,7 @@ class Data():
         # then, we are doing self.data.iloc[i] which is not shuffled
         # so, we might as well not have shuffled in the first place
         # this could be fixed by getting indices and shuffling them.
-        for i in tqdm(range(len(train_data)), desc="Loading Train Data"):
+        for i in range(len(train_data)):
             image, actuation = self.__getitem__(i)
             train_x[i] = image
             train_y[i] = actuation
@@ -69,12 +71,17 @@ class Data():
         val_x = torch.Tensor(len(val_data), 3, 66, 200) # NOTE: hardcoded image size
         val_y = torch.Tensor(len(val_data), 2)
 
-        for i in tqdm(range(len(val_data)), desc="Loading Val Data"):
+        for i in range(len(val_data)):
             image, actuation = self.__getitem__(i)
             val_x[i] = image
             val_y[i] = actuation
 
-        return train_x, train_y, val_x, val_y
+        # cuda
+        new_tensors = []
+        for tensor in [train_x, train_y, val_x, val_y]:
+            new_tensors.append(tensor.to(device))
+
+        return new_tensors
 
 def data_viz(save_path="data.mp4"):
     # load data

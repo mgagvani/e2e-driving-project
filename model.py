@@ -5,7 +5,9 @@ import torch.optim as optim
 from torchvision import transforms
 from tqdm import tqdm
 import pandas as pd
+
 import matplotlib.pyplot as plt
+plt.switch_backend("Agg")
 class PilotNet(nn.Module):
     def __init__(self):
         super().__init__()
@@ -41,6 +43,11 @@ if __name__ == "__main__":
 
     train_x, train_y, val_x, val_y = data.get_tensors()
 
+    # configure GPU
+    torch.set_default_tensor_type(torch.cuda.FloatTensor)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device: ", torch.cuda.get_device_name())
+
     model = PilotNet()
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
@@ -48,8 +55,10 @@ if __name__ == "__main__":
 
     losses = []
     best_loss = float("inf")
-    for epoch in tqdm(range(20), desc="Epoch"):
-        for i in tqdm(range(len(train_x)), desc="Train", leave=False):
+    for epoch in range(20):
+        for i in range(len(train_x)):
+            if i % 1000 == 0:
+                print(f"epoch {epoch} train {i}/{len(train_x)}", end="\r")
             optimizer.zero_grad()
             out = model(train_x[i].unsqueeze(0))
             loss = criterion(out, train_y[i].unsqueeze(0))
@@ -57,7 +66,9 @@ if __name__ == "__main__":
             optimizer.step()
 
         with torch.no_grad():
-            for i in tqdm(range(len(val_x)), desc="Val", leave=False):
+            for i in range(len(val_x)):
+                if i % 1000 == 0:
+                    print(f"epoch {epoch} val {i}/{len(val_x)}", end="\r")
                 out = model(val_x[i].unsqueeze(0))
                 loss = criterion(out, val_y[i].unsqueeze(0))
             losses.append(loss.item())
@@ -72,5 +83,5 @@ if __name__ == "__main__":
     plt.plot(range(len(losses)), losses)
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
-    plt.show()
+    plt.savefig("loss.png")
 
