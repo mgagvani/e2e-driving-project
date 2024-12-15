@@ -12,6 +12,7 @@ import sys, time
 
 from model import PilotNet
 
+plt.switch_backend('Agg')
 
 class Data():
     def __init__(self, path="/scratch/gilbreth/mgagvani/data", load=True):
@@ -49,30 +50,30 @@ class Data():
     def get_tensors(self, test_train_split=0.8):
         split = int(len(self) * test_train_split)
         
-        # shuffle
-        data = self.data.sample(frac=1)
-        train_data = data.iloc[:split]
-        val_data = data.iloc[split:]
+        # get shuffled indices
+        indices = torch.randperm(len(self))
+        train_indices = indices[:split]
+        val_indices = indices[split:]
 
         # cuda tensors
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        train_x = torch.Tensor(len(train_data), 3, 66, 200) # NOTE: hardcoded image size
-        train_y = torch.Tensor(len(train_data), 2)
+        train_x = torch.Tensor(len(train_indices), 3, 66, 200) # NOTE: hardcoded image size
+        train_y = torch.Tensor(len(train_indices), 2)
         
         # NOTE: there may be a bug here. if we are __getitem__(i),
         # then, we are doing self.data.iloc[i] which is not shuffled
         # so, we might as well not have shuffled in the first place
         # this could be fixed by getting indices and shuffling them.
-        for i in range(len(train_data)):
-            image, actuation = self.__getitem__(i)
+        for i, idx in enumerate(train_indices):
+            image, actuation = self.__getitem__(idx)
             train_x[i] = image
             train_y[i] = actuation
 
-        val_x = torch.Tensor(len(val_data), 3, 66, 200) # NOTE: hardcoded image size
-        val_y = torch.Tensor(len(val_data), 2)
+        val_x = torch.Tensor(len(val_indices), 3, 66, 200) # NOTE: hardcoded image size
+        val_y = torch.Tensor(len(val_indices), 2)
 
-        for i in range(len(val_data)):
-            image, actuation = self.__getitem__(i)
+        for i, idx in enumerate(val_indices):
+            image, actuation = self.__getitem__(idx)
             val_x[i] = image
             val_y[i] = actuation
 
@@ -131,7 +132,7 @@ def test_model(model_pth, data_pth):
     axs[1].set_title("Throttle")
     axs[1].legend()
 
-    plt.show()
+    plt.savefig("eval_plot.png", dpi=600)
 
 if __name__ == "__main__":
     args = sys.argv[1:]

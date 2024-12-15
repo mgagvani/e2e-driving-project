@@ -20,40 +20,43 @@ import os, random
 import tqdm
 sensor_size = (200, 66)
 
-# generate map string. 
-'''
-C: Circular
-S: Straight
-'''
-N = 8
-map_str = "".join(random.sample(["C", "S"], k=N, counts=[N*10, N] ))
-print("Map string: ", map_str)
+def generate_cfg():
+    # generate map string. 
+    '''
+    C: Circular
+    S: Straight
+    '''
+    N = 10
+    map_str = "".join(random.sample(["C", "S"], k=N, counts=[N*4, N] ))
+    print("Map string: ", map_str)
 
-cfg=dict(image_observation=True, 
-        # OBSERVATION
-        vehicle_config=dict(image_source="rgb_camera"),
-        sensors={"rgb_camera": (RGBCamera, *sensor_size)},
-        stack_size=3,
-        agent_policy=ExpertPolicy, # drive with IDM policy
+    cfg=dict(image_observation=True, 
+            # OBSERVATION
+            vehicle_config=dict(image_source="rgb_camera"),
+            sensors={"rgb_camera": (RGBCamera, *sensor_size)},
+            stack_size=3,
+            agent_policy=ExpertPolicy, # drive with IDM policy
 
-        # PROCEDURAL GENERATION MAP
-        map=map_str,
-        block_dist_config=PGBlockDistConfig,
-        random_lane_width=True,
-        random_lane_num=True,
-        store_map=True,
+            # PROCEDURAL GENERATION MAP
+            map=map_str,
+            block_dist_config=PGBlockDistConfig,
+            random_lane_width=True,
+            random_lane_num=True,
+            store_map=True,
 
-        # TRAFFIC
-        traffic_mode=TrafficMode.Trigger,
-        traffic_density=0.025,
+            # TRAFFIC
+            traffic_mode=TrafficMode.Trigger,
+            traffic_density=0.025,
 
-        # RANDOMIZATION
-        num_scenarios=1000,
-        start_seed=random.randint(0, 1000), # random seed (it's saved in the config.pkl)
-)
+            # RANDOMIZATION
+            num_scenarios=1000,
+            start_seed=random.randint(0, 1000), # random seed (it's saved in the config.pkl)
+    )
+
+    return cfg
 
 if __name__ == "__main__":
-    env=MetaDriveEnv(cfg)
+    env=MetaDriveEnv(config=(cfg:=generate_cfg()))
 
     # data collection in data/ (scratch)
     data_path = "/scratch/gilbreth/mgagvani/data"
@@ -80,7 +83,7 @@ if __name__ == "__main__":
             obs, rew, terminated, truncated, info = env.step([0, 1])
             # print(info)
             # rendering, the last one is the current frame
-            ret=obs["image"][..., -1]*255 # [0., 1.] to [0, 255]
+            ret=obs["image"][..., -1] * 255 # the data *should* be 0-1
             ret=ret.astype(np.uint8)
 
             # save image
@@ -88,6 +91,7 @@ if __name__ == "__main__":
 
             # update data (steer, throttle)
             data.loc[i] = [img_path, *info["action"]]
+            # print(data.loc[i])
 
             if terminated: # keep on going to get to 1000 samples
                 env.reset()
