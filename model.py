@@ -43,6 +43,8 @@ if __name__ == "__main__":
 
     train_x, train_y, val_x, val_y = data.get_tensors()
 
+    data_filter = lambda x: abs(x[1]) > 0.2
+
     # configure GPU
     torch.set_default_tensor_type(torch.cuda.FloatTensor)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -53,10 +55,13 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.MSELoss()
 
-    losses = []
+    losses, skipped_vals = [], []
     best_loss = float("inf")
     for epoch in range(20):
         for i in range(len(train_x)):
+            if data_filter(train_y[i]): # filter out according to data_filter
+                skipped_vals.append(train_y[i][1])
+                continue
             if i % 1000 == 0:
                 print(f"epoch {epoch} train {i}/{len(train_x)}", end="\r")
             optimizer.zero_grad()
@@ -78,6 +83,11 @@ if __name__ == "__main__":
                 torch.save(model.state_dict(), "model.pth")
 
         print(f"Epoch {epoch}, Loss: {loss.item()}")
+
+    # skip values
+    print(f"Skipped {len(skipped_vals)} values")
+    print(f"Mean skipped value: {sum(skipped_vals) / len(skipped_vals)}")
+    print(f"Min/max/median skipped value: {min(skipped_vals), max(skipped_vals), sorted(skipped_vals)[len(skipped_vals) // 2]}")
 
     # plot losses
     plt.plot(range(len(losses)), losses)

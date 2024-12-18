@@ -65,7 +65,9 @@ class Data():
         # so, we might as well not have shuffled in the first place
         # this could be fixed by getting indices and shuffling them.
         for i, idx in enumerate(train_indices):
-            image, actuation = self.__getitem__(idx)
+            if i % 1000 == 0:
+                print(f"Loading train {i} of {len(train_indices)}", end="\r")
+            image, actuation = self.__getitem__(int(idx))
             train_x[i] = image
             train_y[i] = actuation
 
@@ -73,7 +75,9 @@ class Data():
         val_y = torch.Tensor(len(val_indices), 2)
 
         for i, idx in enumerate(val_indices):
-            image, actuation = self.__getitem__(idx)
+            if i % 1000 == 0:
+                print(f"Loading val {i} of {len(val_indices)}", end="\r")
+            image, actuation = self.__getitem__(int(idx))
             val_x[i] = image
             val_y[i] = actuation
 
@@ -121,18 +125,19 @@ def test_model(model_pth, data_pth):
     print(f"Inference Time per frame: {(t1-t0)/len(data)}")
     
     # subplot
-    fig, axs = plt.subplots(2)
-    axs[0].plot(x, true_y_steer, label="True")
-    axs[0].plot(x, pred_y_steer, label="Predicted")
+    fig, axs = plt.subplots(2, figsize=(12, 8))
+    axs[0].plot(x, true_y_steer, label="True", linewidth=0.5)
+    axs[0].plot(x, pred_y_steer, label="Predicted", linewidth=0.5)
     axs[0].set_title("Steer")
+    axs[0].set_ylim([-1.5, 1.5])
     axs[0].legend()
 
-    axs[1].plot(x, true_y_throttle, label="True")
-    axs[1].plot(x, pred_y_throttle, label="Predicted")
+    axs[1].plot(x, true_y_throttle, label="True", linewidth=0.5)
+    axs[1].plot(x, pred_y_throttle, label="Predicted", linewidth=0.5)
     axs[1].set_title("Throttle")
     axs[1].legend()
 
-    plt.savefig("eval_plot.png", dpi=600)
+    plt.savefig("eval_plot.png", dpi=900)
 
 if __name__ == "__main__":
     args = sys.argv[1:]

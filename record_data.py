@@ -78,7 +78,7 @@ if __name__ == "__main__":
 
     try:
         env.reset()
-        for i in tqdm.tqdm(range(10000)):
+        for i in tqdm.tqdm(range(25000)):
             # simulation
             obs, rew, terminated, truncated, info = env.step([0, 1])
             # print(info)
@@ -86,10 +86,15 @@ if __name__ == "__main__":
             ret=obs["image"][..., -1] * 255 # the data *should* be 0-1
             ret=ret.astype(np.uint8)
 
+            # random hflip (also update steer)
+            if random.random() > 0.5:
+                ret = cv2.flip(ret, 1)
+                info["action"][1] = -info["action"][1]
+
             # save image
             cv2.imwrite(img_path:=os.path.join(curr_session, f"img_{i}.png"), ret)
 
-            # update data (steer, throttle)
+            # update data (throttle, steer)
             data.loc[i] = [img_path, *info["action"]]
             # print(data.loc[i])
 
