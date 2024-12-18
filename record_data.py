@@ -5,15 +5,11 @@ import pandas as pd
 import time
 from metadrive.policy.expert_policy import ExpertPolicy
 from metadrive.policy.idm_policy import IDMPolicy
-from metadrive.component.algorithm.blocks_prob_dist import PGBlockDistConfig
-from metadrive.component.map.base_map import BaseMap
-from metadrive.component.map.pg_map import parse_map_config, MapGenerateMethod
-from metadrive.component.pgblock.first_block import FirstPGBlock
+from metadrive.policy.lange_change_policy import LaneChangePolicy
+from hybrid_policy import HybridPolicy
 from metadrive.constants import DEFAULT_AGENT, TerminationState
-from metadrive.envs.base_env import BaseEnv
+from metadrive.component.algorithm.blocks_prob_dist import PGBlockDistConfig
 from metadrive.manager.traffic_manager import TrafficMode
-from metadrive.utils import clip, Config
-from metadrive.utils import generate_gif
 import numpy as np
 import pickle
 import os, random
@@ -35,7 +31,9 @@ def generate_cfg():
             vehicle_config=dict(image_source="rgb_camera"),
             sensors={"rgb_camera": (RGBCamera, *sensor_size)},
             stack_size=3,
-            agent_policy=ExpertPolicy, # drive with IDM policy
+            agent_policy=HybridPolicy, # use this for steering ONLY
+            discrete_action=True,
+            use_multi_discrete=True,
 
             # PROCEDURAL GENERATION MAP
             map=map_str,
@@ -46,7 +44,7 @@ def generate_cfg():
 
             # TRAFFIC
             traffic_mode=TrafficMode.Trigger,
-            traffic_density=0.025,
+            traffic_density=0.1, # increase for more dataset diversity
 
             # RANDOMIZATION
             num_scenarios=1000,
@@ -76,27 +74,43 @@ if __name__ == "__main__":
     data_csv = os.path.join(curr_session, "data.csv")
     data = pd.DataFrame(columns=["img_path", "throttle", "steer"])
 
+    env.reset()
+
+    # instantiate throttle policy
+    # current_car = env.agent_manager.get_agent(DEFAULT_AGENT)
+    # throttle_policy = ExpertPolicy(current_car, random_seed=0)
+
     try:
-        env.reset()
-        for i in tqdm.tqdm(range(25000)):
+        for i in tqdm.tqdm(range(20000)):
             # simulation
-            obs, rew, terminated, truncated, info = env.step([0, 1])
+            # calculate throttle from IDM policy
+            # output of IDM act is [steer, throttle]
+            # throttle = abs((_action:=throttle_policy.act())[1]) # throttle is always positive
+            # throttle = min(3, throttle) # cap throttle at 3
+
+            obs, rew, terminated, truncated, info = env.step(
+                [0, 1] # 0 means don't change lanes
+            )
+
+            # print(_action); input()
+
+            # print(info); input()
             # print(info)
             # rendering, the last one is the current frame
             ret=obs["image"][..., -1] * 255 # the data *should* be 0-1
             ret=ret.astype(np.uint8)
 
             # random hflip (also update steer)
-            if random.random() > 0.5:
-                ret = cv2.flip(ret, 1)
-                info["action"][1] = -info["action"][1]
+            # if random.random() > 0.5:
+            #     ret = cv2.flip(ret, 1)
+            #     info["action"][1] = -info["action"][1]
 
             # save image
             cv2.imwrite(img_path:=os.path.join(curr_session, f"img_{i}.png"), ret)
 
             # update data (throttle, steer)
             data.loc[i] = [img_path, *info["action"]]
-            # print(data.loc[i])
+            # print(data.loc[i]); input()
 
             if terminated: # keep on going to get to 1000 samples
                 env.reset()

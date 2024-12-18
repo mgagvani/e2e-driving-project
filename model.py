@@ -43,7 +43,8 @@ if __name__ == "__main__":
 
     train_x, train_y, val_x, val_y = data.get_tensors()
 
-    data_filter = lambda x: abs(x[1]) > 0.2
+    # data_filter = lambda x: abs(x[1]) > 0.2
+    data_filter = lambda x: True # no filter, basically
 
     # configure GPU
     torch.set_default_tensor_type(torch.cuda.FloatTensor)
