@@ -38,18 +38,18 @@ class PilotNet(nn.Module):
     
    
 if __name__ == "__main__":
+    # configure GPU
+    torch.set_default_tensor_type(torch.cuda.FloatTensor)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device: ", torch.cuda.get_device_name(), " with properties: ", torch.cuda.get_device_properties(device))
+
     from utils import Data
     data = Data()
 
     train_x, train_y, val_x, val_y = data.get_tensors()
 
-    # data_filter = lambda x: abs(x[1]) > 0.2
-    data_filter = lambda x: True # no filter, basically
-
-    # configure GPU
-    torch.set_default_tensor_type(torch.cuda.FloatTensor)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using device: ", torch.cuda.get_device_name())
+    data_filter = lambda x: abs(x[1]) > 0.2
+    use_filter = False
 
     model = PilotNet()
     model.train()
@@ -60,7 +60,7 @@ if __name__ == "__main__":
     best_loss = float("inf")
     for epoch in range(20):
         for i in range(len(train_x)):
-            if data_filter(train_y[i]): # filter out according to data_filter
+            if data_filter(train_y[i]) and use_filter: # filter out according to data_filter
                 skipped_vals.append(train_y[i][1])
                 continue
             if i % 1000 == 0:

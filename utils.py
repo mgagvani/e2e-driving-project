@@ -49,7 +49,13 @@ class Data():
         return image, actuation
     
     def train_val_split(self, test_train_split=0.8):
-        """Returns train and validation datasets"""
+        """
+        Returns train and validation datasets.
+        Used with torch.utils.data.DataLoader
+        e.g.
+        train_dataset, val_dataset = data.train_val_split()
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+        """
         split = int(len(self) * test_train_split)
         indices = torch.randperm(len(self))
         train_indices = indices[:split]
@@ -60,6 +66,47 @@ class Data():
         val_dataset = Subset(self, val_indices)
         
         return train_dataset, val_dataset
+    
+    def get_tensors(self, test_train_split=0.8):
+        split = int(len(self) * test_train_split)
+        
+        # get shuffled indices
+        indices = torch.randperm(len(self))
+        train_indices = indices[:split]
+        val_indices = indices[split:]
+
+        # cuda tensors
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        train_x = torch.Tensor(len(train_indices), 3, 66, 200) # NOTE: hardcoded image size
+        train_y = torch.Tensor(len(train_indices), 2)
+        
+        # NOTE: there may be a bug here. if we are __getitem__(i),
+        # then, we are doing self.data.iloc[i] which is not shuffled
+        # so, we might as well not have shuffled in the first place
+        # this could be fixed by getting indices and shuffling them.
+        for i, idx in enumerate(train_indices):
+            if i % 1000 == 0:
+                print(f"Loading train {i} of {len(train_indices)}", end="\r")
+            image, actuation = self.__getitem__(int(idx))
+            train_x[i] = image
+            train_y[i] = actuation
+
+        val_x = torch.Tensor(len(val_indices), 3, 66, 200) # NOTE: hardcoded image size
+        val_y = torch.Tensor(len(val_indices), 2)
+
+        for i, idx in enumerate(val_indices):
+            if i % 1000 == 0:
+                print(f"Loading val {i} of {len(val_indices)}", end="\r")
+            image, actuation = self.__getitem__(int(idx))
+            val_x[i] = image
+            val_y[i] = actuation
+
+        # cuda
+        new_tensors = []
+        for tensor in [train_x, train_y, val_x, val_y]:
+            new_tensors.append(tensor.to(device))
+
+        return new_tensors
 
 def data_viz(save_path="data.mp4"):
     # load data
