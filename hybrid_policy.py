@@ -11,7 +11,6 @@ class HybridPolicy(EnvInputPolicy):
         super(HybridPolicy, self).__init__(control_object, random_seed)
         self.lane_change_policy = LaneChangePolicy(control_object, random_seed)
         self.idm_policy = IDMPolicy(control_object, random_seed)
-        # If you prefer to use ExpertPolicy:
         # self.expert_policy = ExpertPolicy(control_object, random_seed)
 
     def act(self, agent_id):
