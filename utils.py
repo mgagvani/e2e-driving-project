@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 import sys, time
 
-from model import PilotNet
+from models import PilotNet
 
 plt.switch_backend('Agg')
 
