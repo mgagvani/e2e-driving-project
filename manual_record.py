@@ -31,9 +31,10 @@ def generate_cfg():
             vehicle_config=dict(image_source="rgb_camera"),
             sensors={"rgb_camera": (RGBCamera, *sensor_size)},
             stack_size=3,
-            agent_policy=HybridPolicy, # use this for steering ONLY
-            discrete_action=True,
-            use_multi_discrete=True,
+            agent_policy=None,
+            manual_control=True,
+            controller="steering_wheel",
+            use_render=True,
 
             # PROCEDURAL GENERATION MAP
             map=map_str,
@@ -44,7 +45,7 @@ def generate_cfg():
 
             # TRAFFIC
             traffic_mode=TrafficMode.Trigger,
-            traffic_density=0.1, # increase for more dataset diversity
+            traffic_density=0.01, # increase for more dataset diversity
 
             # RANDOMIZATION
             num_scenarios=1000,
@@ -57,7 +58,7 @@ if __name__ == "__main__":
     env=MetaDriveEnv(config=(cfg:=generate_cfg()))
 
     # data collection in data/ (scratch)
-    data_path = "/scratch/gilbreth/mgagvani/data"
+    data_path = "data"
     if not os.path.exists(data_path):
         os.makedirs(data_path)
         
@@ -76,10 +77,6 @@ if __name__ == "__main__":
 
     env.reset()
 
-    # instantiate throttle policy
-    # current_car = env.agent_manager.get_agent(DEFAULT_AGENT)
-    # throttle_policy = ExpertPolicy(current_car, random_seed=0)
-
     try:
         for i in tqdm.tqdm(range(20000)):
             # simulation
@@ -91,6 +88,9 @@ if __name__ == "__main__":
             obs, rew, terminated, truncated, info = env.step(
                 [0, 1] # 0 means don't change lanes
             )
+
+            # render
+            env.render(window=True)
 
             # print(_action); input()
 

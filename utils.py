@@ -15,7 +15,7 @@ from models import PilotNet
 plt.switch_backend('Agg')
 
 class Data():
-    def __init__(self, path="/scratch/gilbreth/mgagvani/data", load=True):
+    def __init__(self, path="data", load=True):
         # find all folders, get data.csv
         data = []
         for folder in os.listdir(path):
@@ -132,7 +132,7 @@ def test_model(model_pth, data_pth):
     pred_y_throttle = []
     x = []
 
-    BATCH_SIZE = 1024
+    BATCH_SIZE = 8192
     chunk_ends = [i for i in range(0, len(data), BATCH_SIZE)]
     chunk_ends.append(len(data))
 
@@ -151,14 +151,17 @@ def test_model(model_pth, data_pth):
         images = torch.stack(images)
         actuations = torch.stack(actuations)
         # old code: actually inference
-        out = model.forward(image.unsqueeze(0))
-        pred_y_steer.append(out[0][1].item())
-        pred_y_throttle.append(out[0][0].item())
-        true_y_steer.append(actuation[1].item())
-        true_y_throttle.append(actuation[0].item())
-        x.append(i)
+        out = model.forward(images)
+        for i, out in enumerate(out):
+            pred_y_steer.append(out[1].item())
+            pred_y_throttle.append(out[0].item())
+            true_y_steer.append(actuations[i][1].item())
+            true_y_throttle.append(actuations[i][0].item())
+            x.append(i + bucket[0])
     t1 = time.perf_counter()
     print(f"Inference Time per frame: {(t1-t0)/len(data)}")
+
+    plt.cla()
     
     # subplot
     fig, axs = plt.subplots(2, figsize=(12, 8))
@@ -178,15 +181,16 @@ def test_model(model_pth, data_pth):
     # video showing the graph zoomed in on the x-axis scrolling through the data
     images = []
     HORIZONTAL = H = 200
-    for i in range(len(x)-H):
+    STEP = 10
+    for i in range(0, len(x)-H, STEP):
         print(f"Frame {i}/{len(x)-H}", end="\r")
         plt.clf()
-        plt.plot(x[i:i+H], true_y_steer[i:i+H], label="True", linewidth=0.5)
-        plt.plot(x[i:i+H], pred_y_steer[i:i+H], label="Predicted", linewidth=0.5)
+        plt.plot(x[i:i+H], true_y_steer[i:i+H], label="True", linewidth=1.5)
+        plt.plot(x[i:i+H], pred_y_steer[i:i+H], label="Predicted", linewidth=1.5)
         plt.title("Steer")
-        plt.ylim([-1.5, 1.5])
+        plt.ylim([-1.0, 1.0])
         plt.legend()
-        plt.savefig("tmp/eval_plot.png", dpi=300)#
+        plt.savefig("tmp/eval_plot.png", dpi=150)#
         assert os.path.exists("tmp/eval_plot.png")
         images.append(cv2.imread("tmp/eval_plot.png"))
     clip = ImageSequenceClip(images, fps=30)

@@ -20,7 +20,7 @@ import pickle
 import os, random
 
 import torch
-from model import PilotNet
+from models import PilotNet
 
 sensor_size = (200, 66)
 
@@ -71,6 +71,9 @@ if __name__ == "__main__":
         # get image
         image = obs["image"] 
 
+        # render
+        env.render(window=True)
+
         # infer
         # note that model was trained with (3, 66, 200) images
         image = torch.Tensor(image).permute(3, 2, 0, 1) # (200, 66, 3) -> (3, 66, 200) (correct)
@@ -80,11 +83,13 @@ if __name__ == "__main__":
         
 
         # actuate
+        new_out = (out[0], 0.5) # (steering, throttle)
         obs, reward, term, trunc, info = env.step(out)
         done = term or trunc
 
         iter += 1
-        if done:
+        print(f"Step {iter}", end="\r")
+        if done or iter > 20000:
             print(f"Done in {iter} iterations. {stop_count} more to go.")
             env.reset()
             images.append(np.zeros((66, 200, 3)))
