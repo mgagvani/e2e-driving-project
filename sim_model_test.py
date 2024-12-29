@@ -21,6 +21,7 @@ import os, random
 
 import torch
 from models import PilotNet
+from policy import *
 
 sensor_size = (200, 66)
 
@@ -34,6 +35,8 @@ cfg = dict(image_observation=True,
             vehicle_config=dict(image_source="rgb_camera"),
             sensors={"rgb_camera": (RGBCamera, *sensor_size)},
             stack_size=1,
+            use_render=True,
+            agent_policy=ModelPolicy,
 
             # PROCEDURAL GENERATION MAP
             map=map_str,
@@ -52,11 +55,6 @@ cfg = dict(image_observation=True,
 )
 
 if __name__ == "__main__":
-    # load model
-    model = PilotNet()
-    model.load_state_dict(torch.load("model.pth"))
-    model.eval()
-
     env = MetaDriveEnv(config=cfg)
     env.reset()
 
@@ -77,14 +75,14 @@ if __name__ == "__main__":
         # infer
         # note that model was trained with (3, 66, 200) images
         image = torch.Tensor(image).permute(3, 2, 0, 1) # (200, 66, 3) -> (3, 66, 200) (correct)
-        out = model(image)
-        out = out.squeeze(0).detach().numpy()
+        # out = model(image)
+        # out = out.squeeze(0).detach().numpy()
         images.append(image.to("cpu").detach().cpu().numpy().squeeze(0).transpose(1, 2, 0) * 255.)
         
 
         # actuate
-        new_out = (out[0], 0.5) # (steering, throttle)
-        obs, reward, term, trunc, info = env.step(out)
+        new_out = (0.0, 1.0) # (steering, throttle)
+        obs, reward, term, trunc, info = env.step(new_out) # i think new_out is irrelevant
         done = term or trunc
 
         iter += 1

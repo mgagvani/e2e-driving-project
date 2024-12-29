@@ -6,7 +6,8 @@ import time
 from metadrive.policy.expert_policy import ExpertPolicy
 from metadrive.policy.idm_policy import IDMPolicy
 from metadrive.policy.lange_change_policy import LaneChangePolicy
-from policy import HybridPolicy
+from policy import *
+from metadrive.policy.manual_control_policy import *
 from metadrive.constants import DEFAULT_AGENT, TerminationState
 from metadrive.component.algorithm.blocks_prob_dist import PGBlockDistConfig
 from metadrive.manager.traffic_manager import TrafficMode

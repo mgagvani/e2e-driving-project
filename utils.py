@@ -180,17 +180,25 @@ def test_model(model_pth, data_pth):
 
     # video showing the graph zoomed in on the x-axis scrolling through the data
     images = []
-    HORIZONTAL = H = 200
-    STEP = 10
+    HORIZONTAL = H = 250
+    STEP = 12
     for i in range(0, len(x)-H, STEP):
         print(f"Frame {i}/{len(x)-H}", end="\r")
-        plt.clf()
-        plt.plot(x[i:i+H], true_y_steer[i:i+H], label="True", linewidth=1.5)
-        plt.plot(x[i:i+H], pred_y_steer[i:i+H], label="Predicted", linewidth=1.5)
-        plt.title("Steer")
-        plt.ylim([-1.0, 1.0])
-        plt.legend()
-        plt.savefig("tmp/eval_plot.png", dpi=150)#
+        plt.clf(); plt.cla()
+        fig, axs = plt.subplots(2, figsize=(12, 8))
+        axs[0].plot(x[i:i+H], true_y_steer[i:i+H], label="True", linewidth=1.5)
+        axs[0].plot(x[i:i+H], pred_y_steer[i:i+H], label="Predicted", linewidth=1.5)
+        axs[0].set_title("Steer")
+        axs[0].set_ylim([-1.0, 1.0])
+        axs[0].legend()
+
+        axs[1].plot(x[i:i+H], true_y_throttle[i:i+H], label="True", linewidth=1.5)
+        axs[1].plot(x[i:i+H], pred_y_throttle[i:i+H], label="Predicted", linewidth=1.5)
+        axs[1].set_title("Throttle")
+        axs[1].set_ylim([-1.0, 1.0])
+        axs[1].legend()
+        plt.savefig("tmp/eval_plot.png", dpi=100)#
+        plt.close(fig)
         assert os.path.exists("tmp/eval_plot.png")
         images.append(cv2.imread("tmp/eval_plot.png"))
     clip = ImageSequenceClip(images, fps=30)

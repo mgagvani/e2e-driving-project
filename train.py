@@ -52,7 +52,7 @@ def main_PilotNet():
                     print(f"epoch {epoch} val {i}/{len(val_x)}", end="\r")
                 out = model(val_x[i].unsqueeze(0))
                 avg_loss += criterion(out, val_y[i].unsqueeze(0))
-            losses.append(avg_loss / len(val_x))
+            losses.append(avg_loss.item() / len(val_x))
             if losses[-1] < best_loss:
                 best_loss = loss
                 print(f"Saving model with loss {loss.item()}")
