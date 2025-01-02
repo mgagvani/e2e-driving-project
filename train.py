@@ -5,6 +5,7 @@ import torch.optim as optim
 from torchvision import transforms
 from tqdm import tqdm
 import pandas as pd
+import sys
 
 import matplotlib.pyplot as plt
 plt.switch_backend("Agg")
@@ -15,10 +16,15 @@ def main_PilotNet():
     torch.set_default_tensor_type(torch.cuda.FloatTensor)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device: ", torch.cuda.get_device_name(), " with properties: ", torch.cuda.get_device_properties(device))
-
-    from utils import Data
+    
+    from utils import Data, DKData
     from models import PilotNet
-    data = Data()
+
+    args = sys.argv[1:]
+    if len(args) == 0:
+        data = Data()
+    elif args[0] == "dk":
+        data = DKData()
 
     train_x, train_y, val_x, val_y = data.get_tensors()
 
@@ -54,8 +60,8 @@ def main_PilotNet():
                 avg_loss += criterion(out, val_y[i].unsqueeze(0))
             losses.append(avg_loss.item() / len(val_x))
             if losses[-1] < best_loss:
-                best_loss = loss
-                print(f"Saving model with loss {loss.item()}")
+                best_loss = losses[-1]
+                print(f"Saving model with loss {best_loss}")
                 torch.save(model.state_dict(), "model.pth")
 
         print(f"Epoch {epoch}, Loss: {loss.item()}")

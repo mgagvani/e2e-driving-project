@@ -6,6 +6,10 @@ from torchvision import transforms
 from tqdm import tqdm
 import pandas as pd
 from transformers import AutoProcessor, SiglipVisionModel 
+
+METADRIVE_OBS_FLATTENED_SIZE = 1152
+FORZA_OBS_FLATTENED_SIZE = 2496
+
 class PilotNet(nn.Module):
     def __init__(self):
         super().__init__()
@@ -15,7 +19,7 @@ class PilotNet(nn.Module):
         self.conv3 = nn.Conv2d(36, 48, 5, stride=2)
         self.conv4 = nn.Conv2d(48, 64, 3)
         self.conv5 = nn.Conv2d(64, 64, 3)
-        self.nn6 = nn.Linear(1152, 100)
+        self.nn6 = nn.Linear(FORZA_OBS_FLATTENED_SIZE, 100)
         self.nn7 = nn.Linear(100, 50)
         self.nn8 = nn.Linear(50, 10)
         self.nn9 = nn.Linear(10, 2) # throttle, steer

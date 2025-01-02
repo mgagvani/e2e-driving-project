@@ -30,6 +30,7 @@ class Data():
         ])
 
         self.load_from_disk = load
+        self.IMG_SIZE = (3, 66, 200)
 
     def __len__(self):
         return len(self.data)
@@ -77,7 +78,7 @@ class Data():
 
         # cuda tensors
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        train_x = torch.Tensor(len(train_indices), 3, 66, 200) # NOTE: hardcoded image size
+        train_x = torch.Tensor(len(train_indices), *self.IMG_SIZE)
         train_y = torch.Tensor(len(train_indices), 2)
         
         # NOTE: there may be a bug here. if we are __getitem__(i),
@@ -91,7 +92,7 @@ class Data():
             train_x[i] = image
             train_y[i] = actuation
 
-        val_x = torch.Tensor(len(val_indices), 3, 66, 200) # NOTE: hardcoded image size
+        val_x = torch.Tensor(len(val_indices), *self.IMG_SIZE)
         val_y = torch.Tensor(len(val_indices), 2)
 
         for i, idx in enumerate(val_indices):
@@ -107,10 +108,55 @@ class Data():
             new_tensors.append(tensor.to(device))
 
         return new_tensors
+    
+class DKData(Data):
+    def __init__(self, path="../mycar/data", load=True):
+        # get all *.catalog
+        catalogs = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(".catalog")]
+        data = pd.DataFrame()
+        # headers: _index, _session_id, _timestamp_ms, cam/image_array, user/throttle, user/angle, user/mode
+        for catalog in catalogs:
+            catalog_file = open(catalog, "r")
+            for line in catalog_file.readlines():
+                _dict = eval(line)
+                _dict_df = pd.DataFrame([_dict])
+                data = pd.concat([data, _dict_df], ignore_index=True)
 
-def data_viz(save_path="data.mp4"):
+        self.data = data
+
+        # crop 40px from top, then to tensor
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+        ])
+
+        self.crop_cv2 = lambda x: x[40:, :, :] # HWC. 40px from top
+
+        self.load_from_disk = load
+        self.path = path
+        self.IMG_SIZE = (3, 80, 160)
+
+    def __getitem__(self, idx_any):
+        idx = int(idx_any)
+        image_path = os.path.join(self.path, "images", self.data.iloc[idx]["cam/image_array"])
+        if self.load_from_disk:
+            image = cv2.imread(image_path)
+            image = self.crop_cv2(image)
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(image)
+            image = self.transform(image)
+        else:
+            image = image_path
+        # throttle, steer
+        actuation = torch.tensor([self.data.iloc[idx]["user/throttle"], self.data.iloc[idx]["user/angle"]], dtype=torch.float32)
+
+        return image, actuation
+
+def data_viz(save_path="data.mp4", dk=False):
     # load data
-    data = Data(load=False)
+    if dk:
+        data = DKData(load=False)
+    else:
+        data = Data(load=False)
     
     images = []
     for i, (image_path, actuation) in enumerate(data): # its only path because we set load=False
@@ -118,13 +164,17 @@ def data_viz(save_path="data.mp4"):
 
     # create video
     clip = ImageSequenceClip(images, fps=30)
-    clip.write_videofile(save_path)
+    clip.write_videofile(save_path, codec="libx264")
 
-def test_model(model_pth, data_pth):
+def test_model(model_pth, data_pth, dk):
     model = PilotNet()
     model.load_state_dict(torch.load(model_pth))
+    model = model.to("cuda")
     model.eval()
-    data = Data(data_pth)
+    if dk:
+        data = DKData(data_pth)
+    else:
+        data = Data(data_pth)
 
     true_y_steer = []
     true_y_throttle = []
@@ -148,7 +198,7 @@ def test_model(model_pth, data_pth):
             image, actuation = data[i]
             images.append(image)
             actuations.append(actuation)
-        images = torch.stack(images)
+        images = torch.stack(images).to("cuda")
         actuations = torch.stack(actuations)
         # old code: actually inference
         out = model.forward(images)
@@ -181,7 +231,10 @@ def test_model(model_pth, data_pth):
     # video showing the graph zoomed in on the x-axis scrolling through the data
     images = []
     HORIZONTAL = H = 250
-    STEP = 12
+    if len(x) > 25_000:
+        STEP = 50
+    else:
+        STEP = 10
     for i in range(0, len(x)-H, STEP):
         print(f"Frame {i}/{len(x)-H}", end="\r")
         plt.clf(); plt.cla()
@@ -206,9 +259,11 @@ def test_model(model_pth, data_pth):
 
 if __name__ == "__main__":
     args = sys.argv[1:]
+    if args[-1] and args[-1] == "dk":
+        dk = True
     if args[0] == "viz":
-        data_viz(*args[1:])
+        data_viz(*args[1:-1], dk)
     elif args[0] == "test":
-        test_model(*args[1:])
+        test_model(*args[1:-1], dk)
     else:
         raise ValueError("Invalid command")
