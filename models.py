@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torchvision import transforms
+from torchvision import transforms, models
 from tqdm import tqdm
 import pandas as pd
 from transformers import AutoProcessor, SiglipVisionModel 
@@ -37,6 +37,26 @@ class PilotNet(nn.Module):
         x = self.nn9(x)
 
         return x
+    
+class ResNet18Pilot(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        # get model - we want the feature extracto!
+        self.resnet = models.resnet18(pretrained=True)
+
+        # freeze.
+        for layer in self.resnet.parameters():
+            layer.requires_grad = False
+
+
+        self.resnet.fc = nn.Linear(512, 2) # throttle, steer
+
+        for param in self.resnet.fc.parameters():
+            param.requires_grad = True
+        
+    def forward(self, x):
+        return self.resnet(x)
 
 class SigLIPPilot(nn.Module):
     def __init__(self):

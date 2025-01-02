@@ -105,12 +105,18 @@ if __name__ == "__main__":
     # init camera
     camera = ScreenCamera()
 
+    # misc
+    times = []
+    print("starting")
+
     while True:
         try:
             img = camera.run()
             img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0).to("cuda") / 255.0
             img = img[:, :, 40:, :]
+            t0 = time.time()
             out = model(img)
+            times.append(time.time() - t0)
             out = out.squeeze(0).detach().cpu().numpy()
             print((out[1], out[0]))
             controller.run(out[1], out[0]) # steer, throttle
@@ -126,3 +132,5 @@ if __name__ == "__main__":
             camera.shutdown()
             controller.shutdown()
             break
+
+    print("Avg inference time (ms): ", sum(times) / len(times) * 1000)

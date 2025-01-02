@@ -13,6 +13,7 @@ import sys, time
 from models import PilotNet
 
 plt.switch_backend('Agg')
+torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 class Data():
     def __init__(self, path="data", load=True):
@@ -101,7 +102,7 @@ class Data():
             image, actuation = self.__getitem__(int(idx))
             val_x[i] = image
             val_y[i] = actuation
-
+        
         # cuda
         new_tensors = []
         for tensor in [train_x, train_y, val_x, val_y]:
@@ -110,7 +111,7 @@ class Data():
         return new_tensors
     
 class DKData(Data):
-    def __init__(self, path="../mycar/data", load=True):
+    def __init__(self, path="../mycar/data", load=True, resnet=False):
         # get all *.catalog
         catalogs = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(".catalog")]
         data = pd.DataFrame()
@@ -125,22 +126,35 @@ class DKData(Data):
         self.data = data
 
         # crop 40px from top, then to tensor
-        self.transform = transforms.Compose([
-            transforms.ToTensor(),
-        ])
-
-        self.crop_cv2 = lambda x: x[40:, :, :] # HWC. 40px from top
+        self.resnet = resnet
+        if not resnet:
+            self.transform = transforms.Compose([
+                transforms.ToTensor(),
+            ])
+        else:
+            self.transform = torch.nn.Sequential(
+                torch.nn.Upsample(size=(224, 224), mode="bicubic"),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            )
 
         self.load_from_disk = load
         self.path = path
-        self.IMG_SIZE = (3, 80, 160)
+        if resnet:
+            self.IMG_SIZE = (3, 224, 224)
+        else:
+            self.IMG_SIZE = (3, 80, 160)
+
+    def crop_cv2(self, x):
+        return x[40:, :, :] # HWC. 40px from top
 
     def __getitem__(self, idx_any):
         idx = int(idx_any)
         image_path = os.path.join(self.path, "images", self.data.iloc[idx]["cam/image_array"])
         if self.load_from_disk:
             image = cv2.imread(image_path)
-            image = self.crop_cv2(image)
+            if not self.resnet:
+                image = self.crop_cv2(image)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(image)
             image = self.transform(image)
