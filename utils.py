@@ -10,9 +10,10 @@ from tqdm import tqdm
 
 import sys, time
 
-from models import PilotNet
+from models import PilotNet, ResNet18Pilot
 
 plt.switch_backend('Agg')
+torch.set_default_device("cuda")
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 class Data():
@@ -181,7 +182,11 @@ def data_viz(save_path="data.mp4", dk=False):
     clip.write_videofile(save_path, codec="libx264")
 
 def test_model(model_pth, data_pth, dk):
-    model = PilotNet()
+    resnet = input("ResNet? (y/n): ").lower() == "y"
+    if resnet:
+        model = ResNet18Pilot()
+    else:
+        model = PilotNet()
     model.load_state_dict(torch.load(model_pth))
     model = model.to("cuda")
     model.eval()
@@ -196,7 +201,7 @@ def test_model(model_pth, data_pth, dk):
     pred_y_throttle = []
     x = []
 
-    BATCH_SIZE = 8192
+    BATCH_SIZE = 2048
     chunk_ends = [i for i in range(0, len(data), BATCH_SIZE)]
     chunk_ends.append(len(data))
 

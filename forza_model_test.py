@@ -8,6 +8,8 @@ import mss
 import threading
 from PIL import Image
 
+import sys
+
 
 class VirtualController:
     '''
@@ -91,10 +93,15 @@ class ScreenCamera():
         self.sct.close()
 
 if __name__ == "__main__":
-    from models import PilotNet
-    model = PilotNet()
+    args = sys.argv[1:]
+    from models import PilotNet, ResNet18Pilot
+    if len(args) == 0:
+        model = PilotNet()
+    elif args[0] == "resnet":
+        model = ResNet18Pilot()
 
     # load model
+    torch.set_default_device("cuda")
     model.load_state_dict(torch.load("model.pth"))
     model = model.to("cuda")
     model.eval()

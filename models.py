@@ -50,7 +50,15 @@ class ResNet18Pilot(nn.Module):
             layer.requires_grad = False
 
 
-        self.resnet.fc = nn.Linear(512, 2) # throttle, steer
+        self.resnet.fc = nn.Sequential(
+            nn.Linear(512, 100),
+            nn.ReLU(),
+            nn.Linear(100, 50),
+            nn.ReLU(),
+            nn.Linear(50, 10),
+            nn.ReLU(),
+            nn.Linear(10, 2)
+        )
 
         for param in self.resnet.fc.parameters():
             param.requires_grad = True

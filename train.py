@@ -35,13 +35,15 @@ def main_PilotNet():
         else:
             data = DKData()
 
+    BATCH_SIZE = 1
+
     # get_tensors must be replaced with DataLoader to prevent OOM
     train_dataset, val_dataset = data.train_val_split()
     train_loader = DataLoader(
-        train_dataset, batch_size=1, shuffle=True, num_workers=4, generator=torch.Generator(device="cuda")
+        train_dataset, batch_size=BATCH_SIZE, shuffle=True, generator=torch.Generator(device="cuda")
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=1, shuffle=True, num_workers=4, generator=torch.Generator(device="cuda")
+        val_dataset, batch_size=BATCH_SIZE, shuffle=True, generator=torch.Generator(device="cuda")
     )
 
     data_filter = lambda x: abs(x[1]) > 0.2
@@ -59,33 +61,28 @@ def main_PilotNet():
     losses, skipped_vals = [], []
     best_loss = float("inf")
     for epoch in range(20):
-        for i, (train_x, train_y) in enumerate(train_loader):
-            print(train_x.shape, train_y.shape)
+        for i, (train_x, train_y) in tqdm(enumerate(train_loader), desc=f"Epoch {epoch}", colour="green", total=len(train_loader)):
             (train_x, train_y) = (train_x.to(device), train_y.to(device))
             # NOTE: Data filter is skipped
-            if i % 1000 == 0:
-                print(f"epoch {epoch} train {i}/{len(train_x)}", end="\r")
             optimizer.zero_grad()
-            out = model(train_x[i])
-            loss = criterion(out, train_y[i])
+            out = model(train_x)
+            loss = criterion(out, train_y)
             loss.backward()
             optimizer.step()
 
         with torch.no_grad():
             avg_loss = 0
-            for i, (val_x, val_y) in enumerate(val_loader):
+            for i, (val_x, val_y) in tqdm(enumerate(val_loader), desc=f"Epoch {epoch} Validation", colour="red", total=len(val_loader)):
                 (val_x, val_y) = (val_x.to(device), val_y.to(device))
-                if i % 1000 == 0:
-                    print(f"epoch {epoch} val {i}/{len(val_x)}", end="\r")
-                out = model(val_x[i])
-                avg_loss += criterion(out, val_y[i])
-            losses.append(avg_loss.item() / len(val_x))
+                out = model(val_x)
+                avg_loss += criterion(out, val_y)
+            losses.append(avg_loss.item() / len(val_loader))
             if losses[-1] < best_loss:
                 best_loss = losses[-1]
                 print(f"Saving model with loss {best_loss}")
                 torch.save(model.state_dict(), "model.pth")
 
-        print(f"Epoch {epoch}, Loss: {loss.item()}")
+        print(f"Epoch {epoch}, Loss: {losses[-1]}")
 
     # skip values
     try:
