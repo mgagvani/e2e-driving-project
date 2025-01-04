@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from torchvision import transforms
 from tqdm import tqdm
 
-import sys, time
+import sys, time, pickle
 
 from model import PilotNet
 
@@ -123,6 +123,9 @@ def test_model(model_pth, data_pth):
         x.append(i)
     t1 = time.perf_counter()
     print(f"Inference Time per frame: {(t1-t0)/len(data)}")
+
+    print("Saving pickle")
+    pickle.dump((true_y_steer, true_y_throttle, pred_y_steer, pred_y_throttle, x), open("eval_plot.pkl", "wb"))
     
     # subplot
     fig, axs = plt.subplots(2, figsize=(12, 8))
