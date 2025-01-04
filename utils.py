@@ -117,7 +117,8 @@ class Data():
         return new_tensors
     
 class DKData(Data):
-    def __init__(self, path="../mycar/data", load=True):
+    # def __init__(self, path="../mycar/data", load=True:
+    def __init__(self, path="/scratch/gilbreth/mgagvani/DK_Dataset/data", load=True):
         # get all *.catalog
         catalogs = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(".catalog")]
         data = pd.DataFrame()

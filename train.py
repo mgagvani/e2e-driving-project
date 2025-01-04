@@ -35,10 +35,13 @@ def main_PilotNet():
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.CrossEntropyLoss() # nn.MSELoss()
+    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer) # using default params for now
 
     losses, skipped_vals = [], []
+    train_losses = []
     best_loss = float("inf")
     for epoch in range(20):
+        train_loss = 0
         for i in range(len(train_x)):
             # if data_filter(train_y[i]) and use_filter: # filter out according to data_filter
             #    skipped_vals.append(train_y[i][1])
@@ -48,8 +51,11 @@ def main_PilotNet():
             optimizer.zero_grad()
             out = model(train_x[i].unsqueeze(0))
             loss = criterion(out, train_y[i].unsqueeze(0))
+            train_loss += loss.item()
             loss.backward()
             optimizer.step()
+            scheduler.step()
+        train_losses.append(train_loss / len(train_x))
 
         with torch.no_grad():
             avg_loss = 0
@@ -61,10 +67,10 @@ def main_PilotNet():
             losses.append(avg_loss.item() / len(val_x))
             if losses[-1] < best_loss:
                 best_loss = losses[-1]
-                print(f"Saving model with loss {best_loss}")
+                print(f"Saving model with VAL loss {best_loss}")
                 torch.save(model.state_dict(), "model.pth")
 
-        print(f"Epoch {epoch}, Loss: {loss.item()}")
+        print(f"Epoch {epoch}, TRAIN Loss: {train_losses[-1]}, VAL Loss: {losses[-1]}")
 
     # skip values
     try:
