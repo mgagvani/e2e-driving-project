@@ -18,7 +18,7 @@ def main_PilotNet():
     print("Using device: ", torch.cuda.get_device_name(), " with properties: ", torch.cuda.get_device_properties(device))
     
     from utils import Data, DKData
-    from models import PilotNet
+    from models import MegaPilotNet
 
     args = sys.argv[1:]
     if len(args) == 0:
@@ -31,14 +31,15 @@ def main_PilotNet():
     data_filter = lambda x: abs(x[1]) > 0.2
     use_filter = False
 
-    model = PilotNet()
+    model = MegaPilotNet()
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.MSELoss()
 
-    losses, skipped_vals = [], []
+    losses, train_losses, skipped_vals = [], [], []
     best_loss = float("inf")
     for epoch in range(20):
+        avg_train_loss = 0
         for i in range(len(train_x)):
             if data_filter(train_y[i]) and use_filter: # filter out according to data_filter
                 skipped_vals.append(train_y[i][1])
@@ -48,8 +49,11 @@ def main_PilotNet():
             optimizer.zero_grad()
             out = model(train_x[i].unsqueeze(0))
             loss = criterion(out, train_y[i].unsqueeze(0))
+            avg_train_loss += loss.item()
             loss.backward()
             optimizer.step()
+
+        train_losses.append(avg_train_loss / len(train_x))
 
         with torch.no_grad():
             avg_loss = 0
@@ -61,10 +65,10 @@ def main_PilotNet():
             losses.append(avg_loss.item() / len(val_x))
             if losses[-1] < best_loss:
                 best_loss = losses[-1]
-                print(f"Saving model with loss {best_loss}")
+                print(f"Saving model with VAL loss {best_loss}")
                 torch.save(model.state_dict(), "model.pth")
 
-        print(f"Epoch {epoch}, Loss: {loss.item()}")
+        print(f"Epoch {epoch}, TRAIN loss: {train_losses[-1]}, VAL loss: {losses[-1]}")
 
     # skip values
     try:

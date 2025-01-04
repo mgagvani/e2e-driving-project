@@ -4,7 +4,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1 
 #SBATCH --cpus-per-task=16
-#SBATCH --time=00:15:00
+#SBATCH --time=02:15:00
 #SBATCH -A ziran-n
 #SBATCH -J e2e_eval
 
@@ -21,6 +21,6 @@ echo $PYTHONPATH
 cd $SLURM_SUBMIT_DIR
 
 date
-/home/mgagvani/.conda/envs/e2e_proj/bin/python utils.py viz
-/home/mgagvani/.conda/envs/e2e_proj/bin/python utils.py test model.pth /scratch/gilbreth/mgagvani/data
+# /home/mgagvani/.conda/envs/e2e_proj/bin/python utils.py viz
+/home/mgagvani/.conda/envs/e2e_proj/bin/python utils.py test model.pth /scratch/gilbreth/mgagvani/DK_Dataset/data dk
 date

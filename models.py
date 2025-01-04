@@ -37,6 +37,52 @@ class PilotNet(nn.Module):
         x = self.nn9(x)
 
         return x
+    
+
+class MegaPilotNet(nn.Module):
+    def __init__(self, drop=0.5):
+        super().__init__()
+
+        self.activ = nn.SiLU
+        self.drop = drop
+        
+        # Feature extraction 
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 24, 5, stride=2),
+            self.activ(),
+            nn.Conv2d(24, 36, 5, stride=2),
+            self.activ(),
+            nn.Conv2d(36, 48, 5, stride=2),
+            self.activ(),
+            nn.Conv2d(48, 64, 3),
+            self.activ(),
+            nn.Conv2d(64, 64, 3),
+            self.activ()
+        )
+        
+        # Pooling and flatten 
+        self.pool = nn.Sequential(
+            nn.MaxPool2d(2, 2), # 2x2 pooling
+            nn.Flatten(),
+            nn.Dropout(self.drop)
+        )
+        
+        # Control output block
+        self.control = nn.Sequential(
+            nn.Linear(384, 100),
+            self.activ(),
+            nn.Linear(100, 50),
+            self.activ(),
+            nn.Linear(50, 10),
+            self.activ(),
+            nn.Linear(10, 2)  # throttle, steer
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.pool(x)
+        x = self.control(x)
+        return x
 
 class SigLIPPilot(nn.Module):
     def __init__(self):

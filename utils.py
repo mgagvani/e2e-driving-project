@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 import sys, time
 
-from models import PilotNet
+from models import *
 
 plt.switch_backend('Agg')
 
@@ -110,7 +110,7 @@ class Data():
         return new_tensors
     
 class DKData(Data):
-    def __init__(self, path="../mycar/data", load=True):
+    def __init__(self, path="/scratch/gilbreth/mgagvani/DK_Dataset/data", load=True):
         # get all *.catalog
         catalogs = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(".catalog")]
         data = pd.DataFrame()
@@ -167,7 +167,7 @@ def data_viz(save_path="data.mp4", dk=False):
     clip.write_videofile(save_path, codec="libx264")
 
 def test_model(model_pth, data_pth, dk):
-    model = PilotNet()
+    model = MegaPilotNet(drop=0.0)
     model.load_state_dict(torch.load(model_pth))
     model = model.to("cuda")
     model.eval()
@@ -182,7 +182,7 @@ def test_model(model_pth, data_pth, dk):
     pred_y_throttle = []
     x = []
 
-    BATCH_SIZE = 8192
+    BATCH_SIZE = 16
     chunk_ends = [i for i in range(0, len(data), BATCH_SIZE)]
     chunk_ends.append(len(data))
 
