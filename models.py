@@ -2,13 +2,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torchvision import transforms
+from torchvision import transforms, models
 from tqdm import tqdm
 import pandas as pd
-from transformers import AutoProcessor, SiglipVisionModel 
+import timm
 
 METADRIVE_OBS_FLATTENED_SIZE = 1152
 FORZA_OBS_FLATTENED_SIZE = 2496
+
+N_BINS = 5
 
 class PilotNet(nn.Module):
     def __init__(self):
@@ -38,33 +40,57 @@ class PilotNet(nn.Module):
 
         return x
 
-class SigLIPPilot(nn.Module):
+class FeatureExtractorPilot(nn.Module):
     def __init__(self):
         super().__init__()
 
-        # init vision model
-        # (this is extremely overpowered)
-        model_id = "google/siglip-so400m-patch14-384"
-        self.vision_model = SiglipVisionModel.from_pretrained(model_id)
-        self.processor = AutoProcessor.from_pretrained(model_id)
+        feature_extractor = timm.create_model("efficientnet_b0", pretrained=True, num_classes=0)
 
-        # init control model
-        self.nn6 = nn.Linear(1152, 100) # 1152 is the output embedding size
-        self.nn7 = nn.Linear(100, 50)
-        self.nn8 = nn.Linear(50, 10)
-        self.nn9 = nn.Linear(10, 2) # throttle, steer
-    
-    def forward(self, x):   
-        # TODO: implement batch. embeddings are weird when batched
+        for param in feature_extractor.parameters():
+            param.requires_grad = False
 
-        # get vision embeddings
-        vision_output = self.model(
-            **self.processor(images=x, return_tensors="pt").to("cuda")
-        ).pooler_output
+        self.pool = nn.AdaptiveAvgPool2d((1, 1)) # 1x1x1280
 
-        y = F.relu(self.nn6(vision_output))
-        y = F.relu(self.nn7(y))
-        y = F.relu(self.nn8(y))
-        y = self.nn9(y)
+        flattened_size = 1280 * 1 * 1
 
-        return y
+        self.fc1 = nn.Linear(flattened_size, 500)
+        self.fc2 = nn.Linear(500, 100)
+        self.fc3 = nn.Linear(100, 50)
+        self.fc4 = nn.Linear(50, 10)
+        self.fc5 = nn.Linear(10, 2) # throttle, steer
+
+        self.feature_extractor = feature_extractor
+
+    def forward(self, x):
+        x = self.feature_extractor.forward_features(x)
+        x = self.pool(x)
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
+        x = F.relu(self.fc4(x))
+        x = self.fc5(x)
+
+        return x
+
+class ResNet18Pilot(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # get model - we want the feature extracto!
+        self.resnet = models.resnet18(pretrained=True)
+        # freeze.
+        for layer in self.resnet.parameters():
+            layer.requires_grad = False
+
+        # set trainable layers
+        for layer in self.resnet.layer4.parameters():
+            layer.requires_grad = True    
+        self.resnet.fc = nn.Linear(512, 2*N_BINS) # throttle, steer
+        for param in self.resnet.fc.parameters():
+            param.requires_grad = True
+        
+    def forward(self, x):
+        x = self.resnet(x)
+        x = x.view(-1, 2, N_BINS) # (reshape to batchsize, throttle, steer)
+        # apply softmax to throttle and steer, then return
+        return F.softmax(x, dim=2) # (batchsize, 2, steer/throttle)

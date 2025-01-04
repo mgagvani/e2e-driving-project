@@ -7,10 +7,11 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from torchvision import transforms
 from tqdm import tqdm
+import numpy as np
 
 import sys, time
 
-from models import PilotNet
+from models import *
 
 plt.switch_backend('Agg')
 
@@ -79,7 +80,13 @@ class Data():
         # cuda tensors
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         train_x = torch.Tensor(len(train_indices), *self.IMG_SIZE)
-        train_y = torch.Tensor(len(train_indices), 2)
+
+        # regression
+        # train_y = torch.Tensor(len(train_indices), 2)
+
+        # one hot
+        ONEHOT_SIZE = (2, N_BINS)
+        train_y = torch.Tensor(len(train_indices), *ONEHOT_SIZE)
         
         # NOTE: there may be a bug here. if we are __getitem__(i),
         # then, we are doing self.data.iloc[i] which is not shuffled
@@ -93,7 +100,7 @@ class Data():
             train_y[i] = actuation
 
         val_x = torch.Tensor(len(val_indices), *self.IMG_SIZE)
-        val_y = torch.Tensor(len(val_indices), 2)
+        val_y = torch.Tensor(len(val_indices), *ONEHOT_SIZE)
 
         for i, idx in enumerate(val_indices):
             if i % 1000 == 0:
@@ -127,27 +134,65 @@ class DKData(Data):
         # crop 40px from top, then to tensor
         self.transform = transforms.Compose([
             transforms.ToTensor(),
+            transforms.Lambda(lambda x: x.unsqueeze(0)),
+            torch.nn.Upsample(size=(224, 224), mode="bicubic"),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]), ## 
         ])
 
         self.crop_cv2 = lambda x: x[40:, :, :] # HWC. 40px from top
 
         self.load_from_disk = load
         self.path = path
-        self.IMG_SIZE = (3, 80, 160)
+        # self.IMG_SIZE = (3, 80, 160)
+        self.IMG_SIZE = (3, 224, 224)
+        self.onehot = True
+
+    def linear_bin(self, x, n_bins=N_BINS):
+        """
+        Convert continuous value to one-hot array
+        n_bins=20 gives 20 possible positions
+        """
+        # Clip value to [-1, 1]
+        x = np.clip(x, -1, 1)
+    
+        # Create bin edges (-1 to 1 inclusive)
+        bins = np.linspace(-1, 1, n_bins+1)
+    
+        # Get bin index (0 to n_bins-1)
+        idx = np.digitize(x, bins) - 1
+    
+        # Handle edge case for x = 1.0
+        idx = np.clip(idx, 0, n_bins-1)
+
+        # Create one-hot array
+        arr = np.zeros(n_bins)
+        arr[idx] = 1
+        return arr
+
+    def idx_to_steer(self, idx, n_bins=N_BINS):
+        """Convert bin index back to continuous value"""
+        bins = np.linspace(-1, 1, n_bins)
+        return bins[idx]
 
     def __getitem__(self, idx_any):
         idx = int(idx_any)
         image_path = os.path.join(self.path, "images", self.data.iloc[idx]["cam/image_array"])
         if self.load_from_disk:
             image = cv2.imread(image_path)
-            image = self.crop_cv2(image)
+            # image = self.crop_cv2(image)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            image = Image.fromarray(image)
+            # image = Image.fromarray(image)
+            # print(image.shape, transforms.ToTensor()(image).shape)
             image = self.transform(image)
         else:
             image = image_path
         # throttle, steer
-        actuation = torch.tensor([self.data.iloc[idx]["user/throttle"], self.data.iloc[idx]["user/angle"]], dtype=torch.float32)
+        if self.onehot:
+            throttle_arr = self.linear_bin(self.data.iloc[idx]["user/throttle"])
+            steer_arr = self.linear_bin(self.data.iloc[idx]["user/angle"])
+            actuation = torch.tensor([throttle_arr, steer_arr], dtype=torch.float32)
+        else:
+            actuation = torch.tensor([self.data.iloc[idx]["user/throttle"], self.data.iloc[idx]["user/angle"]], dtype=torch.float32)
 
         return image, actuation
 
@@ -167,7 +212,7 @@ def data_viz(save_path="data.mp4", dk=False):
     clip.write_videofile(save_path, codec="libx264")
 
 def test_model(model_pth, data_pth, dk):
-    model = PilotNet()
+    model = ResNet18Pilot()
     model.load_state_dict(torch.load(model_pth))
     model = model.to("cuda")
     model.eval()
@@ -182,7 +227,7 @@ def test_model(model_pth, data_pth, dk):
     pred_y_throttle = []
     x = []
 
-    BATCH_SIZE = 8192
+    BATCH_SIZE = 2048
     chunk_ends = [i for i in range(0, len(data), BATCH_SIZE)]
     chunk_ends.append(len(data))
 
@@ -196,22 +241,34 @@ def test_model(model_pth, data_pth, dk):
         actuations = []
         for i in bucket:
             image, actuation = data[i]
-            images.append(image)
+            images.append(image.squeeze(0))
             actuations.append(actuation)
         images = torch.stack(images).to("cuda")
         actuations = torch.stack(actuations)
         # old code: actually inference
         out = model.forward(images)
         for i, out in enumerate(out):
-            pred_y_steer.append(out[1].item())
-            pred_y_throttle.append(out[0].item())
-            true_y_steer.append(actuations[i][1].item())
-            true_y_throttle.append(actuations[i][0].item())
+            # interpret onehot
+            out = out.detach().cpu().numpy()
+            # print(out)
+            throttle_idx, steer_idx = np.argmax(out[0]), np.argmax(out[1])
+            # print(throttle_idx, steer_idx)
+            out_new = [data.idx_to_steer(steer_idx), data.idx_to_steer(throttle_idx)]
+            # print(out)
+            # input()
+            actuations_new = actuations[i].detach().cpu().numpy()
+            steer_actual_idx, throttle_actual_idx = np.argmax(actuations[i][1]), np.argmax(actuations[i][0])
+            actuations_new = [data.idx_to_steer(throttle_actual_idx), data.idx_to_steer(steer_actual_idx)]
+            pred_y_steer.append(out_new[1])
+            pred_y_throttle.append(out_new[0])
+            true_y_steer.append(actuations_new[1])
+            true_y_throttle.append(actuations_new[0])
+            # print(pred_y_steer); input()
             x.append(i + bucket[0])
     t1 = time.perf_counter()
     print(f"Inference Time per frame: {(t1-t0)/len(data)}")
 
-    plt.cla()
+    plt.cla(); plt.clf()
     
     # subplot
     fig, axs = plt.subplots(2, figsize=(12, 8))

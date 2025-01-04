@@ -91,8 +91,9 @@ class ScreenCamera():
         self.sct.close()
 
 if __name__ == "__main__":
-    from models import PilotNet
-    model = PilotNet()
+    from models import PilotNet, FeatureExtractorPilot
+    import utils
+    model = FeatureExtractorPilot()
 
     # load model
     model.load_state_dict(torch.load("model.pth"))
@@ -105,15 +106,19 @@ if __name__ == "__main__":
     # init camera
     camera = ScreenCamera()
 
+    transform = utils.DKData().transform
+
     while True:
         try:
             img = camera.run()
-            img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0).to("cuda") / 255.0
-            img = img[:, :, 40:, :]
+            # img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0).to("cuda") / 255.0
+            # img = img[:, :, 40:, :]
+            img = transform(img).to("cuda")
+            # print(img.shape); exit()
             out = model(img)
             out = out.squeeze(0).detach().cpu().numpy()
             print((out[1], out[0]))
-            controller.run(out[1], out[0]) # steer, throttle
+            controller.run(out[1]*1.1, out[0]+0.3) # steer, throttle
             # controller.run(out[1], 0.5) # steer, throttle
             
         except KeyboardInterrupt:

@@ -18,7 +18,7 @@ def main_PilotNet():
     print("Using device: ", torch.cuda.get_device_name(), " with properties: ", torch.cuda.get_device_properties(device))
     
     from utils import Data, DKData
-    from models import PilotNet
+    from models import PilotNet, FeatureExtractorPilot, ResNet18Pilot
 
     args = sys.argv[1:]
     if len(args) == 0:
@@ -31,18 +31,18 @@ def main_PilotNet():
     data_filter = lambda x: abs(x[1]) > 0.2
     use_filter = False
 
-    model = PilotNet()
+    model = ResNet18Pilot().to(device)
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
-    criterion = nn.MSELoss()
+    criterion = nn.CrossEntropyLoss() # nn.MSELoss()
 
     losses, skipped_vals = [], []
     best_loss = float("inf")
     for epoch in range(20):
         for i in range(len(train_x)):
-            if data_filter(train_y[i]) and use_filter: # filter out according to data_filter
-                skipped_vals.append(train_y[i][1])
-                continue
+            # if data_filter(train_y[i]) and use_filter: # filter out according to data_filter
+            #    skipped_vals.append(train_y[i][1])
+            #    continue
             if i % 1000 == 0:
                 print(f"epoch {epoch} train {i}/{len(train_x)}", end="\r")
             optimizer.zero_grad()
