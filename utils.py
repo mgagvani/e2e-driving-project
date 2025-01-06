@@ -127,6 +127,8 @@ class DKData(Data):
         # crop 40px from top, then to tensor
         self.transform = transforms.Compose([
             transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                        std=[0.229, 0.224, 0.225]) # Normalize. better results. maybe. 
         ])
 
         self.crop_cv2 = lambda x: x[40:, :, :] # HWC. 40px from top
@@ -167,7 +169,7 @@ def data_viz(save_path="data.mp4", dk=False):
     clip.write_videofile(save_path, codec="libx264")
 
 def test_model(model_pth, data_pth, dk):
-    model = MegaPilotNet(drop=0.0)
+    model = SuperPilot(drop=0.0)
     model.load_state_dict(torch.load(model_pth))
     model = model.to("cuda")
     model.eval()

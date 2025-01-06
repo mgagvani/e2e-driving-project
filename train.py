@@ -18,7 +18,7 @@ def main_PilotNet():
     print("Using device: ", torch.cuda.get_device_name(), " with properties: ", torch.cuda.get_device_properties(device))
     
     from utils import Data, DKData
-    from models import MegaPilotNet
+    from models import ResBlock, SuperPilot
 
     args = sys.argv[1:]
     if len(args) == 0:
@@ -31,20 +31,21 @@ def main_PilotNet():
     data_filter = lambda x: abs(x[1]) > 0.2
     use_filter = False
 
-    model = MegaPilotNet()
+    model = SuperPilot()
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.MSELoss()
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=2, factor=0.5, verbose=True)
 
     losses, train_losses, skipped_vals = [], [], []
     best_loss = float("inf")
-    for epoch in range(20):
+    for epoch in range(25):
         avg_train_loss = 0
         for i in range(len(train_x)):
             if data_filter(train_y[i]) and use_filter: # filter out according to data_filter
                 skipped_vals.append(train_y[i][1])
                 continue
-            if i % 1000 == 0:
+            if i % 2000 == 0:
                 print(f"epoch {epoch} train {i}/{len(train_x)}", end="\r")
             optimizer.zero_grad()
             out = model(train_x[i].unsqueeze(0))
@@ -54,11 +55,12 @@ def main_PilotNet():
             optimizer.step()
 
         train_losses.append(avg_train_loss / len(train_x))
+        scheduler.step(metrics=train_losses[-1], epoch=epoch)
 
         with torch.no_grad():
             avg_loss = 0
             for i in range(len(val_x)):
-                if i % 1000 == 0:
+                if i % 2000 == 0:
                     print(f"epoch {epoch} val {i}/{len(val_x)}", end="\r")
                 out = model(val_x[i].unsqueeze(0))
                 avg_loss += criterion(out, val_y[i].unsqueeze(0))
