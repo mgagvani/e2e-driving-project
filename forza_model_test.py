@@ -91,8 +91,8 @@ class ScreenCamera():
         self.sct.close()
 
 if __name__ == "__main__":
-    from models import PilotNet
-    model = PilotNet()
+    from models import *
+    model = MegaPilotNet()
 
     # load model
     model.load_state_dict(torch.load("model.pth"))
