@@ -12,8 +12,10 @@ WAYPOINT_DIST = 2.0
 TOWN_NAME = 'Town01'
 TIMESTEP = 1 / 30.0 
 N_GOALS = 100
+GOAL_THRESH = 4.0
 
 cam_images = [None, None, None]
+curr_frame = 0
 
 def camera_callback(image, cam_index):
     # Convert to a NumPy array for visualization
@@ -24,7 +26,7 @@ def camera_callback(image, cam_index):
     new_arr = cv2.cvtColor(new_arr, cv2.COLOR_BGR2RGB)
 
     # Save image to disk
-    file_path = f"data/images/cam{cam_index}_{image.frame:06d}.jpg" 
+    file_path = f"data/images/cam{cam_index}_{curr_frame:06d}.jpg" 
     cv2.imwrite(file_path, cv2.cvtColor(new_arr, cv2.COLOR_RGB2BGR))
 
     # Update global variable for visualization
@@ -65,6 +67,9 @@ def classify_turn(angvel_z):
         return "right"
     else:
         return "straight"
+    
+def Vec3d_norm(v):
+    return math.sqrt(v.x**2 + v.y**2 + v.z**2)
 
 
 def main():
@@ -132,16 +137,27 @@ def main():
 
     try:
         for frame in tqdm(range((100_000))):
+            # global image index
+            curr_frame = frame
+
             # Check distance to current goal
             pos_x = ego_vehicle.get_location().x
             pos_y = ego_vehicle.get_location().y
             dist_to_goal = math.hypot(pos_x - current_goal.x, pos_y - current_goal.y)
-            if dist_to_goal < 5.0:
+            if dist_to_goal < GOAL_THRESH:
                 # reset position to start
                 ego_vehicle.set_transform(random.choice(all_spawn_points))
                 print(f"Reached goal, setting new goal. Distance to goal: {dist_to_goal}")
                 set_random_weather(world)
                 current_goal = future_goals.pop(0)
+
+            # check we aren't stuck
+            ego_vel = ego_vehicle.get_velocity()
+            if Vec3d_norm(ego_vel) < 2.0:
+                print("Vehicle is stuck, resetting")
+                ego_vehicle.set_transform(random.choice(all_spawn_points))
+                set_random_weather(world)
+                # unlike reached goal case, we dont want to set a new goal here
 
             # Retrieve control inputs and waypoints
             control = ego_vehicle.get_control()
@@ -160,7 +176,6 @@ def main():
             # Data to put in csv
             pos_x = ego_vehicle.get_location().x
             pos_y = ego_vehicle.get_location().y
-            ego_vel = ego_vehicle.get_velocity()
             ego_angvel = ego_vehicle.get_angular_velocity()
             # left turn - angvel.z positive, greater than 1
             turn = classify_turn(ego_angvel.z)

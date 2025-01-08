@@ -7,6 +7,10 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from torchvision import transforms
 from tqdm import tqdm
+import random
+from functools import lru_cache
+import numpy as np
+from pathlib import Path
 
 import sys, time
 
@@ -150,6 +154,84 @@ class DKData(Data):
         actuation = torch.tensor([self.data.iloc[idx]["user/throttle"], self.data.iloc[idx]["user/angle"]], dtype=torch.float32)
 
         return image, actuation
+    
+class CarlaData(Data):
+    def __init__(self, path="data", load=True):
+        # .
+        # |---data
+        # |--->|---images
+        # |--->|---data_log.csv
+
+        data = pd.read_csv(os.path.join(path, "data_log.csv"))
+        self.data = data
+        
+        # image is 3 800x600 side by side. resize to (3*224, 168)
+        self.transform = transforms.Compose([
+            transforms.Resize((168, 3*224)),
+            transforms.ToTensor(),
+        ])
+
+        self.load_from_disk = load
+        self.IMG_SIZE = (3, 168, 3*224)
+
+        self.headers = [
+            "img_path_l","img_path","img_path_r","throttle","steer",
+            "way1_x","way1_y","way2_x","way2_y","way3_x","way3_y","pos_x","pos_y", "turntype"
+        ]
+    
+    @lru_cache() # cache so we don't have to read from disk every time
+    def __getitem__(self, idx_any):
+        idx = int(idx_any)
+        data = {}
+        for header in self.headers:
+            data[header] = self.data.iloc[idx][header]
+        if self.load_from_disk:
+            paths = [data["img_path_l"], data["img_path"], data["img_path_r"]] # 3 paths
+            paths = [str(Path(path).resolve()) for path in paths]
+            print(paths)
+            images = [cv2.imread(path) for path in paths] # read images
+            images = [cv2.cvtColor(image, cv2.COLOR_BGR2RGB) for image in images] # cv2 reads them as BGR
+            concat_img = np.concatenate(images, axis=1) # axes HWC (168, 3*224, 3)
+            image = Image.fromarray(concat_img)
+            image = self.transform(image)
+        else:
+            image = data["img_path"]
+
+        # output model prediction will be
+        # [ steer    w1x w2x w3x]
+        # [ throttle w1y w2y w3y]
+        predict_data = torch.empty((2, 4))
+        predict_data[0] = torch.tensor([data["steer"], data["way1_x"], data["way2_x"], data["way3_x"]])
+        predict_data[1] = torch.tensor([data["throttle"], data["way1_y"], data["way2_y"], data["way3_y"]])
+
+        flat_preds = predict_data.numpy().flatten(order="F") # (str, thr, w1x, w1y, w2x, w2y, w3x, w3y)
+        return image, flat_preds
+
+    def balanced_indices(self):
+        # Get turntype indices
+        idx_straight = self.data.index[self.data["turntype"] == "straight"].tolist()
+        idx_left = self.data.index[self.data["turntype"] == "left"].tolist()
+        idx_right = self.data.index[self.data["turntype"] == "right"].tolist()
+
+        # Find largest count
+        max_count = max(len(idx_straight), len(idx_left), len(idx_right))
+
+        # Oversample smaller sets
+        def oversample(index_list):
+            if len(index_list) == 0:
+                return []
+            reps = max_count // len(index_list)
+            remainder = max_count % len(index_list)
+            return index_list * reps + random.sample(index_list, remainder)
+
+        balanced = oversample(idx_straight) + oversample(idx_left) + oversample(idx_right)
+        random.shuffle(balanced)
+        return balanced
+    
+    def index_generator(self):
+        indices = self.balanced_indices()
+        for idx in indices:
+            yield idx
 
 def data_viz(save_path="data.mp4", dk=False):
     # load data

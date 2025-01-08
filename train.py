@@ -17,21 +17,27 @@ def main_PilotNet():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device: ", torch.cuda.get_device_name(), " with properties: ", torch.cuda.get_device_properties(device))
     
-    from utils import Data, DKData
-    from models import MegaPilotNet
+    from utils import Data, DKData, CarlaData
+    from models import MultiCamWaypointNet
 
     args = sys.argv[1:]
     if len(args) == 0:
         data = Data()
     elif args[0] == "dk":
         data = DKData()
+    elif args[0] == "carla":
+        data = CarlaData()
 
-    train_x, train_y, val_x, val_y = data.get_tensors()
+    indices = data.balanced_indices()
+    train_idx = indices[:int(len(indices) * 0.8)]
+    val_idx = indices[int(len(indices) * 0.8):]
+
+    print(f"Training on {len(train_idx)} samples, validating on {len(val_idx)} samples")
 
     data_filter = lambda x: abs(x[1]) > 0.2
     use_filter = False
 
-    model = MegaPilotNet()
+    model = MultiCamWaypointNet().to(device)
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.MSELoss()
@@ -40,29 +46,31 @@ def main_PilotNet():
     best_loss = float("inf")
     for epoch in range(20):
         avg_train_loss = 0
-        for i in range(len(train_x)):
-            if data_filter(train_y[i]) and use_filter: # filter out according to data_filter
-                skipped_vals.append(train_y[i][1])
-                continue
+        for i, idx in enumerate(train_idx):
+            # if data_filter(train_y[i]) and use_filter: # filter out according to data_filter
+            #     skipped_vals.append(train_y[i][1])
+            #     continue
             if i % 1000 == 0:
-                print(f"epoch {epoch} train {i}/{len(train_x)}", end="\r")
+                print(f"epoch {epoch} train {i}/{len(train_idx)}", end="\r")
             optimizer.zero_grad()
-            out = model(train_x[i].unsqueeze(0))
-            loss = criterion(out, train_y[i].unsqueeze(0))
+            curr_x, curr_y = data[idx]
+            out = model(curr_x.unsqueeze(0))
+            loss = criterion(out, curr_y[i].unsqueeze(0))
             avg_train_loss += loss.item()
             loss.backward()
             optimizer.step()
 
-        train_losses.append(avg_train_loss / len(train_x))
+        train_losses.append(avg_train_loss / len(train_idx))
 
         with torch.no_grad():
             avg_loss = 0
-            for i in range(len(val_x)):
+            for i, idx in enumerate(val_idx):
                 if i % 1000 == 0:
-                    print(f"epoch {epoch} val {i}/{len(val_x)}", end="\r")
-                out = model(val_x[i].unsqueeze(0))
-                avg_loss += criterion(out, val_y[i].unsqueeze(0))
-            losses.append(avg_loss.item() / len(val_x))
+                    print(f"epoch {epoch} val {i}/{len(val_idx)}", end="\r")
+                val_x, val_y = data[idx]
+                out = model(val_x.unsqueeze(0))
+                avg_loss += criterion(out, val_y.unsqueeze(0))
+            losses.append(avg_loss.item() / len(val_idx))
             if losses[-1] < best_loss:
                 best_loss = losses[-1]
                 print(f"Saving model with VAL loss {best_loss}")

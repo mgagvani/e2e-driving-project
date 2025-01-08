@@ -5,7 +5,6 @@ import torch.optim as optim
 from torchvision import transforms
 from tqdm import tqdm
 import pandas as pd
-from transformers import AutoProcessor, SiglipVisionModel 
 
 METADRIVE_OBS_FLATTENED_SIZE = 1152
 FORZA_OBS_FLATTENED_SIZE = 2496
@@ -84,33 +83,41 @@ class MegaPilotNet(nn.Module):
         x = self.control(x)
         return x
 
-class SigLIPPilot(nn.Module):
-    def __init__(self):
+class MultiCamWaypointNet(nn.Module):
+    def __init__(self, drop=0.5):
         super().__init__()
+        self.act = nn.ReLU
+        self.drop = drop
 
-        # init vision model
-        # (this is extremely overpowered)
-        model_id = "google/siglip-so400m-patch14-384"
-        self.vision_model = SiglipVisionModel.from_pretrained(model_id)
-        self.processor = AutoProcessor.from_pretrained(model_id)
+        # For input shape: (3, 168, 3*224)
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=5, stride=2),
+            self.act(),
+            nn.Conv2d(32, 64, kernel_size=5, stride=2),
+            self.act(),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(64, 128, kernel_size=3),
+            self.act(),
+            nn.Conv2d(128, 128, kernel_size=3),
+            self.act(),
+            nn.MaxPool2d(2, 2)
+        )
 
-        # init control model
-        self.nn6 = nn.Linear(1152, 100) # 1152 is the output embedding size
-        self.nn7 = nn.Linear(100, 50)
-        self.nn8 = nn.Linear(50, 10)
-        self.nn9 = nn.Linear(10, 2) # throttle, steer
-    
-    def forward(self, x):   
-        # TODO: implement batch. embeddings are weird when batched
+        self.flatten = nn.Flatten()
+        self.fc = nn.Sequential(
+            nn.Dropout(self.drop),
+            nn.Linear(128*8*20, 512),  # Adjust based on final spatial dims
+            self.act(),
+            nn.Linear(512, 256),
+            self.act(),
+            nn.Linear(256, 64),
+            self.act(),
+            nn.Linear(64, 8)  # throttle, steer, w1_x, w1_y, w2_x, w2_y, w3_x, w3_y
+        )
 
-        # get vision embeddings
-        vision_output = self.model(
-            **self.processor(images=x, return_tensors="pt").to("cuda")
-        ).pooler_output
+    def forward(self, x):
+        x = self.features(x)
+        x = self.flatten(x)
+        x = self.fc(x)
+        return x
 
-        y = F.relu(self.nn6(vision_output))
-        y = F.relu(self.nn7(y))
-        y = F.relu(self.nn8(y))
-        y = self.nn9(y)
-
-        return y
