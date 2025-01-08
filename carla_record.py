@@ -9,8 +9,9 @@ import math
 import random
 
 WAYPOINT_DIST = 2.0
-TOWN_NAME = 'Town04'
+TOWN_NAME = 'Town01'
 TIMESTEP = 1 / 30.0 
+N_GOALS = 100
 
 cam_images = [None, None, None]
 
@@ -24,7 +25,7 @@ def camera_callback(image, cam_index):
 
     # Save image to disk
     file_path = f"data/images/cam{cam_index}_{image.frame:06d}.jpg" 
-    cv2.imwrite(file_path, new_arr)
+    cv2.imwrite(file_path, cv2.cvtColor(new_arr, cv2.COLOR_RGB2BGR))
 
     # Update global variable for visualization
     cam_images[cam_index] = new_arr
@@ -40,6 +41,31 @@ def get_transform_matrix(x, y, yaw_deg):
         [   0,      0,   1, 0 ],
         [   0,      0,   0, 1 ]
     ], dtype=np.float32)
+
+def clip(val, lo, hi):
+    return max(lo, min(hi, val))
+
+def set_random_weather(world: carla.World):
+    all_weather = [getattr(carla.WeatherParameters, x) for x in dir(carla.WeatherParameters) if '__' not in x]
+    weather = random.choice(all_weather)
+    try:
+        # make sure it's possible to see
+        weather.fog_density = clip(weather.fog_density, 0.0, 5.0)
+        weather.fog_distance = clip(weather.fog_distance, 0.0, 10.0)
+        weather.sun_altitude_angle = clip(weather.sun_altitude_angle, 10.0, 170.0)
+        print(f"Setting weather to {weather}")
+        world.set_weather(weather)
+    except Exception as e:
+        print(f"Error setting weather: {e}")
+
+def classify_turn(angvel_z):
+    if angvel_z > 1:
+        return "left"
+    elif angvel_z < -1:
+        return "right"
+    else:
+        return "straight"
+
 
 def main():
     client = carla.Client('localhost', 2000)
@@ -63,8 +89,10 @@ def main():
 
     # set random goal
     all_spawn_points =  world.get_map().get_spawn_points()
-    current_goal = random.choice(all_spawn_points).location
-    traffic_manager.set_path(ego_vehicle, [current_goal])  # Use current_goal
+    future_goals = [x.location for x in random.choices(all_spawn_points, k=N_GOALS)]
+    traffic_manager.set_path(ego_vehicle, future_goals.copy())
+    current_goal = future_goals.pop(0)
+    set_random_weather(world)
     world.tick()
 
     # Define camera transforms (left, center, right)
@@ -88,7 +116,7 @@ def main():
     csv_writer = csv.writer(csv_file)
     csv_writer.writerow([
         "img_path_l","img_path","img_path_r","throttle","steer",
-        "way1_x","way1_y","way2_x","way2_y","way3_x","way3_y","pos_x","pos_y"
+        "way1_x","way1_y","way2_x","way2_y","way3_x","way3_y","pos_x","pos_y", "turntype"
     ])
 
     plt.ion()
@@ -108,10 +136,12 @@ def main():
             pos_x = ego_vehicle.get_location().x
             pos_y = ego_vehicle.get_location().y
             dist_to_goal = math.hypot(pos_x - current_goal.x, pos_y - current_goal.y)
-            print(f"Distance to goal: {dist_to_goal} : dx = {pos_x - current_goal.x}, dy = {pos_y - current_goal.y}")
             if dist_to_goal < 5.0:
-                current_goal = random.choice(all_spawn_points).location
-                traffic_manager.set_path(ego_vehicle, [current_goal])  # update route
+                # reset position to start
+                ego_vehicle.set_transform(random.choice(all_spawn_points))
+                print(f"Reached goal, setting new goal. Distance to goal: {dist_to_goal}")
+                set_random_weather(world)
+                current_goal = future_goals.pop(0)
 
             # Retrieve control inputs and waypoints
             control = ego_vehicle.get_control()
@@ -131,6 +161,9 @@ def main():
             pos_x = ego_vehicle.get_location().x
             pos_y = ego_vehicle.get_location().y
             ego_vel = ego_vehicle.get_velocity()
+            ego_angvel = ego_vehicle.get_angular_velocity()
+            # left turn - angvel.z positive, greater than 1
+            turn = classify_turn(ego_angvel.z)
 
             # Visualization
             ax.clear()
@@ -157,7 +190,7 @@ def main():
                 next_waypoints[0][0], next_waypoints[0][1],
                 next_waypoints[1][0], next_waypoints[1][1],
                 next_waypoints[2][0], next_waypoints[2][1],
-                pos_x, pos_y
+                pos_x, pos_y, turn
             ])
 
             # Update camera plots
