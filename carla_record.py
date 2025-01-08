@@ -7,10 +7,20 @@ import cv2
 from tqdm import tqdm
 import math
 import random
+import sys
+import pathlib 
+
+CARLA_PATH = "F:\CARLA_0.9.15\WindowsNoEditor\PythonAPI"
+sys.path.append(CARLA_PATH)
+sys.path.append(os.path.join(CARLA_PATH, "carla"))
+sys.path.append(os.path.join(CARLA_PATH, "carla", "agents"))
+from navigation import global_route_planner, behavior_agent
+
 
 WAYPOINT_DIST = 2.0
 TOWN_NAME = 'Town04'
 TIMESTEP = 1 / 30.0 
+N_EXTRAS = 0
 
 cam_images = [None, None, None]
 
@@ -41,6 +51,15 @@ def get_transform_matrix(x, y, yaw_deg):
         [   0,      0,   0, 1 ]
     ], dtype=np.float32)
 
+def set_random_weather(world: carla.World):
+    all_weather = [getattr(carla.WeatherParameters, x) for x in dir(carla.WeatherParameters) if '__' not in x]
+    weather = random.choice(all_weather)
+    try:
+        world.set_weather(weather)
+    except Exception as e:
+        print(f"Error setting weather: {e}")
+
+
 def main():
     client = carla.Client('localhost', 2000)
     client.set_timeout(10.0)
@@ -54,17 +73,27 @@ def main():
     settings.fixed_delta_seconds = TIMESTEP
     world.apply_settings(settings)
 
-    # Spawn ego vehicle
+    # Spawn ego vehicle and others
+    print(f"There are {len(world.get_map().get_spawn_points())} spawn points")
+    spawn_points = random.choices(world.get_map().get_spawn_points(), k=N_EXTRAS)
+    for _ in range(N_EXTRAS):
+        vehicle_bp = random.choice(blueprint_lib.filter('vehicle.*.*'))
+        spawn_point = spawn_points.pop()
+        print(f"Spawning {vehicle_bp.id} at {spawn_point}")
+        world.spawn_actor(vehicle_bp, spawn_point).set_autopilot(True)
+
     vehicle_bp = blueprint_lib.find('vehicle.tesla.model3')
     spawn_point = random.choice(world.get_map().get_spawn_points())
     ego_vehicle = world.spawn_actor(vehicle_bp, spawn_point)
-    ego_vehicle.set_autopilot(True, traffic_manager.get_port())
-    traffic_manager.ignore_lights_percentage(ego_vehicle, 100.0) # dont bother with this
+    print(type(world.get_map()))
+    route_planner = global_route_planner.GlobalRoutePlanner(world.get_map(), sampling_resolution=WAYPOINT_DIST/2)
+    agent = behavior_agent.BehaviorAgent(ego_vehicle, behavior="normal", map_inst=world.get_map(), grp_inst=route_planner)
 
     # set random goal
     all_spawn_points =  world.get_map().get_spawn_points()
     current_goal = random.choice(all_spawn_points).location
-    traffic_manager.set_path(ego_vehicle, [current_goal])  # Use current_goal
+    agent.set_destination(current_goal)
+    set_random_weather(world)
     world.tick()
 
     # Define camera transforms (left, center, right)
@@ -108,13 +137,18 @@ def main():
             pos_x = ego_vehicle.get_location().x
             pos_y = ego_vehicle.get_location().y
             dist_to_goal = math.hypot(pos_x - current_goal.x, pos_y - current_goal.y)
-            print(f"Distance to goal: {dist_to_goal} : dx = {pos_x - current_goal.x}, dy = {pos_y - current_goal.y}")
             if dist_to_goal < 5.0:
+                # reset stuff
+                print(f"Resetting goal, distance to goal: {dist_to_goal}")
+                set_random_weather(world)
                 current_goal = random.choice(all_spawn_points).location
-                traffic_manager.set_path(ego_vehicle, [current_goal])  # update route
+                agent.set_destination(current_goal)
 
             # Retrieve control inputs and waypoints
-            control = ego_vehicle.get_control()
+            control = agent.run_step()
+            control.manual_gear_shift = False
+            ego_vehicle.apply_control(control)
+            plan = list(agent.get_local_planner()._waypoints_queue)
             waypoint_list = world.get_map().get_waypoint(ego_vehicle.get_location())
             next_waypoints = []
             w = waypoint_list
@@ -177,6 +211,8 @@ def main():
         for cam in cameras:
             cam.destroy()
         ego_vehicle.destroy()
+        for actor in world.get_actors():
+            actor.destroy()
 
 if __name__ == '__main__':
     main()
