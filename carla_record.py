@@ -1,12 +1,9 @@
 import carla
-import os
-import csv
+import os, math, random, sys, csv
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 from tqdm import tqdm
-import math
-import random
 
 WAYPOINT_DIST = 2.0
 TOWN_NAME = 'Town01'
@@ -26,6 +23,7 @@ def camera_callback(image, cam_index):
     new_arr = cv2.cvtColor(new_arr, cv2.COLOR_BGR2RGB)
 
     # Save image to disk
+    global curr_frame
     file_path = f"data/images/cam{cam_index}_{curr_frame:06d}.jpg" 
     cv2.imwrite(file_path, cv2.cvtColor(new_arr, cv2.COLOR_RGB2BGR))
 
@@ -73,6 +71,12 @@ def Vec3d_norm(v):
 
 
 def main():
+    args = sys.argv[1:]
+    if len(args) == 0:
+        do_viz = False
+    else:
+        do_viz = args[0] == "viz"
+
     client = carla.Client('localhost', 2000)
     client.set_timeout(10.0)
     world = client.get_world()
@@ -124,21 +128,24 @@ def main():
         "way1_x","way1_y","way2_x","way2_y","way3_x","way3_y","pos_x","pos_y", "turntype"
     ])
 
-    plt.ion()
-    fig_cam, axs_cam = plt.subplots(1, 4)
-    plt.tight_layout()
-    img_plots = []
-    for ax in axs_cam:
-        ax.axis('off')
-        img_plots.append(ax.imshow(np.zeros((600, 800, 3), dtype=np.uint8)))
-    ax = axs_cam[3] # 0,1,2 cam, 3 waypoint
-    ax.axis('equal')    
-    ax.set_aspect('equal', adjustable=None)
+    if do_viz:
+        plt.ion()
+        fig_cam, axs_cam = plt.subplots(1, 4)
+        plt.tight_layout()
+        img_plots = []
+        for ax in axs_cam:
+            ax.axis('off')
+            img_plots.append(ax.imshow(np.zeros((600, 800, 3), dtype=np.uint8)))
+        ax = axs_cam[3] # 0,1,2 cam, 3 waypoints
 
     try:
         for frame in tqdm(range((100_000))):
             # global image index
+            global curr_frame
             curr_frame = frame
+
+            # step sim - do it before writing CSV to sync image path with callback
+            world.tick()
 
             # Check distance to current goal
             pos_x = ego_vehicle.get_location().x
@@ -153,7 +160,7 @@ def main():
 
             # check we aren't stuck
             ego_vel = ego_vehicle.get_velocity()
-            if Vec3d_norm(ego_vel) < 2.0:
+            if Vec3d_norm(ego_vel) < 2.0 and frame > 50: # also wait to let car get up to speed
                 print("Vehicle is stuck, resetting")
                 ego_vehicle.set_transform(random.choice(all_spawn_points))
                 set_random_weather(world)
@@ -181,17 +188,25 @@ def main():
             turn = classify_turn(ego_angvel.z)
 
             # Visualization
-            ax.clear()
-            min_x, min_y, max_x, max_y = -50, -50, 50, 50
-            ax.set_xbound(min_x, max_x)
-            ax.set_ybound(min_y, max_y)
-            ax.plot(0, 0, 'bo', label='Vehicle') # vehicles always at origin in waypoints frame!
-            wx = [wp[0] for wp in next_waypoints]
-            wy = [wp[1] for wp in next_waypoints]
-            ax.plot(wy, wx, 'ro', label='Waypoints') # reverse x/y to show 0 deg as up
-            ax.legend()
-            plt.draw()
-            plt.pause(0.001)
+            if do_viz:
+                ax.clear()
+                plt.tight_layout()
+                ax.axis('equal')    
+                ax.set_aspect('equal', adjustable=None)
+                min_x, min_y, max_x, max_y = -50, -50, 50, 50
+                ax.set_xbound(min_x, max_x)
+                ax.set_ybound(min_y, max_y)
+                ax.plot(0, 0, 'bo', label='Vehicle') # vehicles always at origin in waypoints frame!
+                wx = [wp[0] for wp in next_waypoints]
+                wy = [wp[1] for wp in next_waypoints]
+                ax.plot(wy, wx, 'ro', label='Waypoints') # reverse x/y to show 0 deg as up
+                ax.legend()
+                for i in range(3):
+                    if cam_images[i] is not None:
+                        img_plots[i].set_data(cam_images[i])
+                fig_cam.canvas.draw()
+                plt.draw()
+                plt.pause(0.001)
 
             # Paths for left, center, right images
             img_path_l = f"data/images/cam0_{frame:06d}.jpg"
@@ -207,15 +222,6 @@ def main():
                 next_waypoints[2][0], next_waypoints[2][1],
                 pos_x, pos_y, turn
             ])
-
-            # Update camera plots
-            for i in range(3):
-                if cam_images[i] is not None:
-                    img_plots[i].set_data(cam_images[i])
-            fig_cam.canvas.draw()
-
-            # Advance simulation
-            world.tick()
                 
     except KeyboardInterrupt:
         print("Control C received, exiting")

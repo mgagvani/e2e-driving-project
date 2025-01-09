@@ -106,7 +106,7 @@ class MultiCamWaypointNet(nn.Module):
         self.flatten = nn.Flatten()
         self.fc = nn.Sequential(
             nn.Dropout(self.drop),
-            nn.Linear(128*8*20, 512),  # Adjust based on final spatial dims
+            nn.Linear(34944, 512),  # Adjust based on final spatial dims
             self.act(),
             nn.Linear(512, 256),
             self.act(),

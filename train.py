@@ -29,6 +29,7 @@ def main_PilotNet():
         data = CarlaData()
 
     indices = data.balanced_indices()
+    indices = indices[:15_000]
     train_idx = indices[:int(len(indices) * 0.8)]
     val_idx = indices[int(len(indices) * 0.8):]
 
@@ -39,23 +40,23 @@ def main_PilotNet():
 
     model = MultiCamWaypointNet().to(device)
     model.train()
-    optimizer = optim.Adam(model.parameters(), lr=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
     criterion = nn.MSELoss()
 
     losses, train_losses, skipped_vals = [], [], []
     best_loss = float("inf")
     for epoch in range(20):
         avg_train_loss = 0
-        for i, idx in enumerate(train_idx):
-            # if data_filter(train_y[i]) and use_filter: # filter out according to data_filter
-            #     skipped_vals.append(train_y[i][1])
-            #     continue
-            if i % 1000 == 0:
-                print(f"epoch {epoch} train {i}/{len(train_idx)}", end="\r")
+        for i, idx in tqdm(enumerate(train_idx), total=len(train_idx), colour="green"):
             optimizer.zero_grad()
-            curr_x, curr_y = data[idx]
+            try:
+                curr_x, curr_y = data[idx]
+                (curr_x, curr_y) = (curr_x.to(device), curr_y.to(device))
+            except Exception as e:
+                skipped_vals.append(curr_y)
+                continue
             out = model(curr_x.unsqueeze(0))
-            loss = criterion(out, curr_y[i].unsqueeze(0))
+            loss = criterion(out, curr_y.unsqueeze(0))
             avg_train_loss += loss.item()
             loss.backward()
             optimizer.step()
@@ -64,10 +65,13 @@ def main_PilotNet():
 
         with torch.no_grad():
             avg_loss = 0
-            for i, idx in enumerate(val_idx):
-                if i % 1000 == 0:
-                    print(f"epoch {epoch} val {i}/{len(val_idx)}", end="\r")
-                val_x, val_y = data[idx]
+            for i, idx in tqdm(enumerate(val_idx), total=len(val_idx), colour="red"):
+                try:
+                    val_x, val_y = data[idx]
+                    val_x, val_y = val_x.to(device), val_y.to(device)
+                except Exception as e:
+                    skipped_vals.append(val_y)
+                    continue
                 out = model(val_x.unsqueeze(0))
                 avg_loss += criterion(out, val_y.unsqueeze(0))
             losses.append(avg_loss.item() / len(val_idx))
@@ -89,7 +93,8 @@ def main_PilotNet():
         print(f"Error in skipped values: {e}")
 
     # plot losses
-    plt.plot(range(len(losses)), losses)
+    plt.plot(range(len(losses)), losses, label="Validation")
+    plt.plot(range(len(train_losses)), train_losses, label="Training")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.savefig("loss.png")

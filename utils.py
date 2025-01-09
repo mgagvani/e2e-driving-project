@@ -16,7 +16,7 @@ import sys, time
 
 from models import *
 
-plt.switch_backend('Agg')
+# plt.switch_backend('Agg')
 
 class Data():
     def __init__(self, path="data", load=True):
@@ -164,6 +164,21 @@ class CarlaData(Data):
 
         data = pd.read_csv(os.path.join(path, "data_log.csv"))
         self.data = data
+
+        _len = len(data)
+        print(f"Loaded {len(data)} samples")
+
+        # filter out rows where the image doesn't exist
+        def filter_fn(row):
+            img_paths = (row["img_path"], row["img_path_l"], row["img_path_r"])
+            for img_path in img_paths:
+                path = str(Path(img_path).resolve())
+                if not os.path.exists(path):
+                    return False
+            return True
+        
+        self.data = self.data[self.data.apply(filter_fn, axis=1)] # filter out rows where the image doesn't exist
+        print(f"Filtered out {_len - len(self.data)} samples")
         
         # image is 3 800x600 side by side. resize to (3*224, 168)
         self.transform = transforms.Compose([
@@ -188,9 +203,16 @@ class CarlaData(Data):
         if self.load_from_disk:
             paths = [data["img_path_l"], data["img_path"], data["img_path_r"]] # 3 paths
             paths = [str(Path(path).resolve()) for path in paths]
-            print(paths)
-            images = [cv2.imread(path) for path in paths] # read images
-            images = [cv2.cvtColor(image, cv2.COLOR_BGR2RGB) for image in images] # cv2 reads them as BGR
+            try:
+                images = [cv2.imread(path) for path in paths] # read images
+                images = [cv2.cvtColor(image, cv2.COLOR_BGR2RGB) for image in images] # cv2 reads them as BGR
+            except Exception as e:
+                # remove the image from the data frame
+                self.data.drop(idx, inplace=True)
+                # print warning (image path)
+                print(f"Error reading image at {paths}")
+                # raise an exception so we can skip this frame
+                raise e
             concat_img = np.concatenate(images, axis=1) # axes HWC (168, 3*224, 3)
             image = Image.fromarray(concat_img)
             image = self.transform(image)
@@ -204,7 +226,8 @@ class CarlaData(Data):
         predict_data[0] = torch.tensor([data["steer"], data["way1_x"], data["way2_x"], data["way3_x"]])
         predict_data[1] = torch.tensor([data["throttle"], data["way1_y"], data["way2_y"], data["way3_y"]])
 
-        flat_preds = predict_data.numpy().flatten(order="F") # (str, thr, w1x, w1y, w2x, w2y, w3x, w3y)
+        flat_preds = predict_data.cpu().detach().numpy().flatten(order="F") # (str, thr, w1x, w1y, w2x, w2y, w3x, w3y)
+        flat_preds = torch.Tensor(flat_preds)
         return image, flat_preds
 
     def balanced_indices(self):
@@ -339,6 +362,94 @@ def test_model(model_pth, data_pth, dk):
     clip = ImageSequenceClip(images, fps=30)
     clip.write_videofile("eval_plot.mp4")
 
+@torch.no_grad()
+def test_waypoint_model(model_pth, data_pth):
+    model = MultiCamWaypointNet(drop=0.0)
+    model.load_state_dict(torch.load(model_pth))
+    model = model.to("cuda")
+    model.eval()
+    data = CarlaData(data_pth)
+
+    true_y = []
+    pred_y = []
+    x = []
+
+    # to choose subset of data
+    data.data = data.data[2560:4096]
+
+    BATCH_SIZE = 1024
+    chunk_ends = [i for i in range(0, len(data), BATCH_SIZE)]
+    chunk_ends.append(len(data))
+
+    chunks = [i for i in zip(chunk_ends[:-1], chunk_ends[1:])]
+
+    idx_buckets = [list(range(a, b)) for a, b in chunks]
+
+    t0 = time.perf_counter()
+    for bucket in tqdm(idx_buckets, desc="Inference"):
+        images = []
+        ground_truths = []
+        for i in bucket:
+            image, ground_truth = data[i]
+            images.append(image)
+            ground_truths.append(ground_truth)
+        images = torch.stack(images).to("cuda")
+        ground_truths = torch.stack(ground_truths)
+        # old code: actually inference
+        out = model.forward(images)
+        for i, out in enumerate(out):
+            pred_y.append(out)
+            true_y.append(ground_truths[i])
+            x.append(i + bucket[0])
+    t1 = time.perf_counter()
+    print(f"Inference Time per frame: {(t1-t0)/len(data)}")
+
+    plt.cla()
+    input("Enter to start viz")
+
+    # subplots.
+    '''
+    | imageL | image | imageR | waypoints_pred/true |
+    | steer_pred/true-------- | waypoints_pred/true |
+    | throttle_pred/true----- | waypoints_pred/true |
+    '''
+    plt.ion()
+    fig_cam, axs_cam = plt.subplots(1, 2, figsize=(12, 5))
+    img_plot = axs_cam[0].imshow(np.zeros((600, 3*800, 3), dtype=np.uint8))
+    axs_cam[0].axis('off')
+    ax_way = axs_cam[1]
+    
+    for i in range(len(x)):
+        image = data[i][0]
+        pred_vals = pred_y[i].cpu().detach().numpy()
+        gt_vals = true_y[i]
+
+        # Update camera image subplot
+        concat_img = (image.permute(1,2,0).cpu().numpy()*255).astype(np.uint8)
+        img_plot.set_data(concat_img)
+        
+        # Clear and plot top-down waypoints
+        ax_way.clear()
+        ax_way.axis('equal')
+        ax_way.set_xbound(-50, 50)
+        ax_way.set_ybound(-50, 50)
+        ax_way.plot(0, 0, 'bo', label='Vehicle')
+        # parse predicted w1, w2, w3
+        ax_way.plot(
+            [pred_vals[3], pred_vals[5], pred_vals[7]],
+            [pred_vals[2], pred_vals[4], pred_vals[6]], 'r-x', label='Predicted',
+            alpha=0.75
+        )
+        # parse ground-truth w1, w2, w3
+        ax_way.plot(
+            [gt_vals[3], gt_vals[5], gt_vals[7]],
+            [gt_vals[2], gt_vals[4], gt_vals[6]], 'g-x', label='Ground Truth',
+            alpha=0.75
+        )
+        ax_way.legend(loc='upper right')
+        plt.draw()
+        plt.pause(0.001)
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args[-1] and args[-1] == "dk":
@@ -347,5 +458,7 @@ if __name__ == "__main__":
         data_viz(*args[1:-1], dk)
     elif args[0] == "test":
         test_model(*args[1:-1], dk)
+    elif args[0] == "waypoint":
+        test_waypoint_model(*args[1:])
     else:
         raise ValueError("Invalid command")
