@@ -121,3 +121,99 @@ class MultiCamWaypointNet(nn.Module):
         x = self.fc(x)
         return x
 
+class SplitCamWaypointNet(nn.Module):
+    def __init__(self, drop=0.5):
+        super().__init__()
+        self.act = nn.LeakyReLU
+        self.drop = drop
+
+        # 3 feature extractors for each cam (shape 3, 168, 224)
+        def make_extractor():
+            return nn.Sequential(
+                nn.Conv2d(3, 32, kernel_size=5, stride=2),
+                self.act(),
+                nn.Conv2d(32, 64, kernel_size=5, stride=2),
+                self.act(),
+                nn.MaxPool2d(2, 2),
+                nn.Conv2d(64, 128, kernel_size=3),
+                self.act(),
+                nn.Conv2d(128, 128, kernel_size=3),
+                self.act(),
+                nn.MaxPool2d(2, 2),
+                nn.Flatten()
+            )
+        self.extractor_left = make_extractor()
+        self.extractor_center = make_extractor()
+        self.extractor_right = make_extractor()
+
+        # Heads: each tries to regress 8 outputs (steer, throttle, w1_x, w1_y, w2_x, w2_y, w3_x, w3_y)
+        def make_head(in_features=9856): 
+            return nn.Sequential(
+                nn.Dropout(self.drop),
+                nn.Linear(in_features, 256),
+                self.act(),
+                nn.Linear(256, 8)
+            )
+        self.head_left = make_head()
+        self.head_center = make_head()
+        self.head_right = make_head()
+
+        # Gating network to produce weights for each camera
+        # We'll form a vector [feat_left, feat_center, feat_right] for gating input
+        self.gate_fc = nn.Sequential(
+            nn.Linear(3 * 9856, 3),    # produce 3 gating logits
+        )
+
+        # Final FC for the weighted sum of extracted features
+        self.final_fc = nn.Sequential(
+            nn.Dropout(self.drop),
+            nn.Linear(9856, 256),
+            self.act(),
+            nn.Linear(256, 64),
+            self.act(),
+            nn.Linear(64, 8)
+        )
+
+    def forward(self, x, return_split_heads=True, return_gates=True):
+        # x shape: (B, 3, 168, 3*224)
+        # Split into left, center, right chunks (width 224 each)
+        x_left   = x[:, :, :, 0:224]
+        x_center = x[:, :, :, 224:448]
+        x_right  = x[:, :, :, 448:]
+
+        feat_left   = self.extractor_left(x_left)
+        feat_center = self.extractor_center(x_center)
+        feat_right  = self.extractor_right(x_right)
+
+        # Each head's raw predictions
+        pred_left = self.head_left(feat_left)
+        pred_center = self.head_center(feat_center)
+        pred_right = self.head_right(feat_right)
+
+        # Gating
+        concat_feats = torch.cat([feat_left, feat_center, feat_right], dim=1)   # B x (3*feat_dim)
+        gating_logits = self.gate_fc(concat_feats)                             # B x 3
+        gating_weights = F.softmax(gating_logits, dim=1)                       # B x 3
+
+        # Weighted sum of features
+        # Expand gating_weights to match feature dims (B x 3 x feat_dim)
+        gating_weights_expanded = gating_weights.unsqueeze(-1).expand(-1, -1, feat_left.size(1))
+        stacked_feats = torch.stack([feat_left, feat_center, feat_right], dim=1)  # B x 3 x feat_dim
+        fused_feats = (gating_weights_expanded * stacked_feats).sum(dim=1)       # B x feat_dim
+
+        # Final FC
+        out = self.final_fc(fused_feats)  # shape (B, 8)
+
+        # Optionally return heads' predictions and gating weights
+        if return_split_heads or return_gates:
+            results = [out]
+            if return_split_heads:
+                results += [pred_left, pred_center, pred_right]
+            if return_gates:
+                results += [gating_weights]
+            return results
+
+        return out
+
+
+

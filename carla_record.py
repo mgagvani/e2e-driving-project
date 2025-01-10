@@ -140,7 +140,7 @@ def main():
         ax = axs_cam[3] # 0,1,2 cam, 3 waypoints
 
     try:
-        for frame in tqdm(range((100_000))):
+        for frame in tqdm(range((300_000))):
             # global image index
             global curr_frame
             curr_frame = frame

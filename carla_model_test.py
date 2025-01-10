@@ -1,5 +1,5 @@
 import carla
-import os, math, random, sys, csv
+import os, math, random, sys, time
 import carla.libcarla
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,12 +12,14 @@ from models import MultiCamWaypointNet
 import torch
 
 WAYPOINT_DIST = 2.0
-TOWN_NAME = 'Town01'
+TOWN_NAME = 'Town02'
 TIMESTEP = 1 / 30.0 
 N_GOALS = 100
 GOAL_THRESH = 4.0
+N_EXTRAS = 100
 
 curr_frame = np.zeros((168, 3*224, 3), dtype=np.uint8)
+curr_collision = False
 
 class Prediction:
     def __init__(self, pred, vehicle_transform):
@@ -49,13 +51,15 @@ class Prediction:
             return waypoint, False
         # print(f"Control waypoint: {waypoint.transform.location}")
         return waypoint, True
-    
+
+@torch.no_grad()
 def model_predict(model):
     # get image
     global curr_frame
     img = torch.from_numpy(curr_frame).permute(2, 0, 1).unsqueeze(0).float().to('cuda')
+    img /= 255.0
     # get prediction
-    pred = model(img)
+    pred = model.forward(img)
     return pred
 
 def camera_callback(image, cam_index):
@@ -76,6 +80,11 @@ def camera_callback(image, cam_index):
         curr_frame[:, 224:448, :] = new_arr
     elif cam_index == 2:
         curr_frame[:, 448:, :] = new_arr
+
+def collision_callback(event):
+    print(event)
+    global curr_collision
+    curr_collision = time.time()
 
 
 def get_transform_matrix(x, y, yaw_deg):
@@ -101,7 +110,7 @@ def set_random_weather(world: carla.World):
         weather.fog_density = clip(weather.fog_density, 0.0, 5.0)
         weather.fog_distance = clip(weather.fog_distance, 0.0, 10.0)
         weather.sun_altitude_angle = clip(weather.sun_altitude_angle, 10.0, 170.0)
-        print(f"Setting weather to {weather}")
+        # print(f"Setting weather to {weather}")
         world.set_weather(weather)
     except Exception as e:
         print(f"Error setting weather: {e}")
@@ -173,22 +182,40 @@ def main():
         cam.listen(lambda img, index=idx: camera_callback(img, index))
         cameras.append(cam)
 
+    # collision sensor
+    collision_bp = blueprint_lib.find('sensor.other.collision')
+    collision = world.spawn_actor(collision_bp, carla.Transform(), attach_to=ego_vehicle)
+    collision.listen(lambda event: collision_callback(event))
+
+    # spawn extra cars to make it harder
+    print(f"There are {len(world.get_map().get_spawn_points())} spawn points")
+    spawn_choices = random.choices(world.get_map().get_spawn_points(), k=N_EXTRAS)
+    for _ in range(N_EXTRAS):
+        vehicle_bp = random.choice(blueprint_lib.filter('vehicle.*'))
+        spawn_point = spawn_choices.pop()
+        _car = world.try_spawn_actor(vehicle_bp, spawn_point)
+        if _car is not None:
+            _car.set_autopilot(True, traffic_manager.get_port())
+
     if do_viz:
         plt.ion()
         fig_cam, axs_cam = plt.subplots(1, 2)
-        ax_way = axs_cam[0]
-        img_display = axs_cam[1].imshow(np.zeros((168, 3*224, 3), dtype=np.uint8))
-        axs_cam[1].axis('off')
+        ax_way = axs_cam[1]
+        ax_cam = axs_cam[0]
+        ax_cam.set_aspect('equal', adjustable=None)
+        ax_cam = ax_cam.imshow(np.ones((168, 3*224, 3), dtype=np.uint8))
 
     last_reset = 0
+    all_crashes = dict()
 
     try:
         for frame in range(100_000):
             # step sim - do first to avoid confusion
             world.tick()
 
-            # global image frame
+            # globals 
             global curr_frame
+            global curr_collision
 
             # get model output
             pred = model_predict(model).cpu().detach().numpy()
@@ -200,31 +227,53 @@ def main():
                 [pred[4], pred[5]],
                 [pred[6], pred[7]]
             ]
-            control = vehicle_controller.run_step(30.0, waypoint) # target speed ????
+            # print("- - - - - - - - - - - - - - - - - -")
+            # for i, _wp in enumerate(next_waypoints):
+            #     print(f"Waypoint {i}: {_wp}")
+            control = vehicle_controller.run_step(30.0, waypoint) 
+            # print(f"Gen. Control: {control.steer}, {control.throttle}")
+            # print(f"Pred Control: {pred[0]}, {pred[1]}")
             ego_vehicle.apply_control(control) 
 
             # check we aren't stuck
             ego_vel = ego_vehicle.get_velocity()
+            collision = time.time() - curr_collision < 0.5
+            off_road = not on_road
             if Vec3d_norm(ego_vel) < 2.0 and last_reset + 100 < frame:
-                print("Vehicle is stuck, resetting")
+                print(f"Vehicle is stuck, resetting at frame {frame}")
                 ego_vehicle.set_transform(random.choice(world.get_map().get_spawn_points()))
                 set_random_weather(world)         
                 last_reset = frame   
+                all_crashes[frame] = "stuck"
+            elif collision:
+                print(f"Collision detected at frame {frame}")
+                ego_vehicle.set_transform(random.choice(world.get_map().get_spawn_points()))
+                set_random_weather(world)
+                last_reset = frame
+                all_crashes[frame] = "collision"
+            elif off_road:
+                print(f"Off road detected at frame {frame}")
+                ego_vehicle.set_transform(random.choice(world.get_map().get_spawn_points()))
+                set_random_weather(world)
+                last_reset = frame
+                all_crashes[frame] = "off_road"
 
             # Visualization
             if do_viz:
                 ax_way.clear()
                 ax_way.set_aspect('equal', adjustable=None)
-                min_x, min_y, max_x, max_y = -50, -50, 50, 50
+                min_x, min_y, max_x, max_y = -7, -1, 7, 7
                 ax_way.set_xbound(min_x, max_x)
                 ax_way.set_ybound(min_y, max_y)
+                ax_way.set_xlim(min_x, max_x)
+                ax_way.set_ylim(min_y, max_y)
                 ax_way.plot(0, 0, 'bo', label='Vehicle') # vehicles always at origin in waypoints frame!
                 wx = [wp[0] for wp in next_waypoints]
                 wy = [wp[1] for wp in next_waypoints]
                 color = 'g-o' if on_road else 'r-o'
-                ax_way.plot(wy, wx, color, label='Waypoints') # reverse x/y to show 0 deg as up
+                ax_way.plot(wy, wx, color, label='Predicted Waypoints') # reverse x/y to show 0 deg as up
+                ax_cam.set_data(cv2.cvtColor(curr_frame, cv2.COLOR_BGR2RGB))    
                 ax_way.legend()
-                img_display.set_data(cv2.cvtColor(curr_frame, cv2.COLOR_BGR2RGB))
                 fig_cam.canvas.draw()
                 plt.tight_layout()
                 plt.autoscale(False)
@@ -239,6 +288,7 @@ def main():
         for cam in cameras:
             cam.destroy()
         ego_vehicle.destroy()
+        print(f"Crashes: {all_crashes}")
 
 if __name__ == '__main__':
     main()
