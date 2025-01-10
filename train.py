@@ -29,7 +29,7 @@ def main_PilotNet():
         data = CarlaData()
 
     indices = data.balanced_indices()
-    indices = indices[:15_000]
+    indices = indices[:40_000]
     train_idx = indices[:int(len(indices) * 0.8)]
     val_idx = indices[int(len(indices) * 0.8):]
 
@@ -45,7 +45,7 @@ def main_PilotNet():
 
     losses, train_losses, skipped_vals = [], [], []
     best_loss = float("inf")
-    for epoch in range(20):
+    for epoch in range(40):
         avg_train_loss = 0
         for i, idx in tqdm(enumerate(train_idx), total=len(train_idx), colour="green"):
             optimizer.zero_grad()

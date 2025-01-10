@@ -59,9 +59,10 @@ def set_random_weather(world: carla.World):
         print(f"Error setting weather: {e}")
 
 def classify_turn(angvel_z):
-    if angvel_z > 1:
+    THRESH = 2.0
+    if angvel_z > THRESH:
         return "left"
-    elif angvel_z < -1:
+    elif angvel_z < -THRESH:
         return "right"
     else:
         return "straight"

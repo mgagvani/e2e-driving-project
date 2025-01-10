@@ -112,7 +112,7 @@ class MultiCamWaypointNet(nn.Module):
             self.act(),
             nn.Linear(256, 64),
             self.act(),
-            nn.Linear(64, 8)  # throttle, steer, w1_x, w1_y, w2_x, w2_y, w3_x, w3_y
+            nn.Linear(64, 8)  # steer, throttle, w1_x, w1_y, w2_x, w2_y, w3_x, w3_y
         )
 
     def forward(self, x):

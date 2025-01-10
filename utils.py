@@ -375,7 +375,8 @@ def test_waypoint_model(model_pth, data_pth):
     x = []
 
     # to choose subset of data
-    data.data = data.data[2560:4096]
+    # data.data = data.data[2560:4096]
+    data.data = data.data[(data.data['turntype'] == 'left') | (data.data['turntype'] == 'right')]
 
     BATCH_SIZE = 1024
     chunk_ends = [i for i in range(0, len(data), BATCH_SIZE)]
@@ -414,10 +415,12 @@ def test_waypoint_model(model_pth, data_pth):
     | throttle_pred/true----- | waypoints_pred/true |
     '''
     plt.ion()
-    fig_cam, axs_cam = plt.subplots(1, 2, figsize=(12, 5))
-    img_plot = axs_cam[0].imshow(np.zeros((600, 3*800, 3), dtype=np.uint8))
+    fig_cam, axs_cam = plt.subplots(1, 3, figsize=(12, 5))
+    img_plot = axs_cam[1].imshow(np.zeros((600, 3*800, 3), dtype=np.uint8))
     axs_cam[0].axis('off')
-    ax_way = axs_cam[1]
+    ax_way = axs_cam[2]
+    ax_act = axs_cam[0]
+    ax_act.axis("off")
     
     for i in range(len(x)):
         image = data[i][0]
@@ -427,6 +430,19 @@ def test_waypoint_model(model_pth, data_pth):
         # Update camera image subplot
         concat_img = (image.permute(1,2,0).cpu().numpy()*255).astype(np.uint8)
         img_plot.set_data(concat_img)
+
+        # Update steering and throttle subplot quiver
+        ax_act.clear()
+        ax_act.axis('equal')
+        ax_act.set_xbound(-1, 1)
+        ax_act.set_ybound(-1, 1)
+        u_pred = pred_vals[0]
+        v_pred = pred_vals[1]
+        u_gt = gt_vals[0]
+        v_gt = gt_vals[1]
+        ax_act.quiver(0, 0, u_pred, v_pred, color='r', label='Predicted', alpha=0.75)
+        ax_act.quiver(0, 0, u_gt, v_gt, color='g', label='Ground Truth', alpha=0.75)
+        ax_act.legend(loc='upper right')
         
         # Clear and plot top-down waypoints
         ax_way.clear()
@@ -447,6 +463,7 @@ def test_waypoint_model(model_pth, data_pth):
             alpha=0.75
         )
         ax_way.legend(loc='upper right')
+        plt.tight_layout()
         plt.draw()
         plt.pause(0.001)
 
