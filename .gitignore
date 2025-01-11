@@ -4,7 +4,7 @@ test/
 tmp/
 __pycache__/
 *.pth
-*.mp4
+
 *.out
 *.png
 agents/
