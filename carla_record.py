@@ -7,9 +7,10 @@ from tqdm import tqdm
 
 WAYPOINT_DIST = 2.0
 TOWN_NAME = 'Town01'
-TIMESTEP = 1 / 30.0 
+TIMESTEP = 1 / 20.0 
 N_GOALS = 100
 GOAL_THRESH = 4.0
+N_EXTRAS = 25
 
 cam_images = [None, None, None]
 curr_frame = 0
@@ -61,14 +62,22 @@ def set_random_weather(world: carla.World):
 def classify_turn(angvel_z):
     THRESH = 2.0
     if angvel_z > THRESH:
-        return "left"
-    elif angvel_z < -THRESH:
         return "right"
+    elif angvel_z < -THRESH:
+        return "left"
     else:
         return "straight"
     
 def Vec3d_norm(v):
     return math.sqrt(v.x**2 + v.y**2 + v.z**2)
+
+def extra_config(car, traffic_manager):
+    car.set_autopilot(True, traffic_manager.get_port())
+    traffic_manager.ignore_lights_percentage(car, 100.0)
+    traffic_manager.distance_to_leading_vehicle(car, 2.0)
+    traffic_manager.auto_lane_change(car, True)
+    traffic_manager.random_right_lanechange_percentage(car, 50.0)
+    traffic_manager.random_left_lanechange_percentage(car, 50.0)
 
 
 def main():
@@ -105,6 +114,19 @@ def main():
     set_random_weather(world)
     world.tick()
 
+    # spawn extra cars to make it harder
+    print(f"There are {len(world.get_map().get_spawn_points())} spawn points")
+    extra_cars = []
+    spawn_choices = random.choices(world.get_map().get_spawn_points(), k=N_EXTRAS)
+    for _ in range(N_EXTRAS):
+        vehicle_bp = random.choice(blueprint_lib.filter('vehicle.*'))
+        spawn_point = spawn_choices.pop()
+        _car = world.try_spawn_actor(vehicle_bp, spawn_point)
+        if _car is not None:
+            _car.set_autopilot(True, traffic_manager.get_port())
+            extra_config(_car, traffic_manager)
+            extra_cars.append(_car)
+
     # Define camera transforms (left, center, right)
     camera_transforms = [
         carla.Transform(carla.Location(x=1.5, y=-0.5, z=1.7), carla.Rotation(yaw=-45)),
@@ -128,6 +150,8 @@ def main():
         "img_path_l","img_path","img_path_r","throttle","steer",
         "way1_x","way1_y","way2_x","way2_y","way3_x","way3_y","pos_x","pos_y", "turntype"
     ])
+
+    last_reset = 0
 
     if do_viz:
         plt.ion()
@@ -158,6 +182,7 @@ def main():
                 print(f"Reached goal, setting new goal. Distance to goal: {dist_to_goal}")
                 set_random_weather(world)
                 current_goal = future_goals.pop(0)
+                last_reset = frame
 
             # check we aren't stuck
             ego_vel = ego_vehicle.get_velocity()
@@ -165,7 +190,13 @@ def main():
                 print("Vehicle is stuck, resetting")
                 ego_vehicle.set_transform(random.choice(all_spawn_points))
                 set_random_weather(world)
+                last_reset = frame
                 # unlike reached goal case, we dont want to set a new goal here
+
+            if last_reset - frame < 100:
+                # stop all cars for a bit
+                for car in extra_cars:
+                    car.apply_control(carla.VehicleControl(throttle=0.0, steer=0.0, brake=1.0))
 
             # Retrieve control inputs and waypoints
             control = ego_vehicle.get_control()
@@ -192,15 +223,22 @@ def main():
             if do_viz:
                 ax.clear()
                 plt.tight_layout()
-                ax.axis('equal')    
                 ax.set_aspect('equal', adjustable=None)
-                min_x, min_y, max_x, max_y = -50, -50, 50, 50
+                min_x, min_y, max_x, max_y = -7, -1, 7, 7
                 ax.set_xbound(min_x, max_x)
                 ax.set_ybound(min_y, max_y)
+                ax.set_xlim(min_x, max_x)
+                ax.set_ylim(min_y, max_y)
                 ax.plot(0, 0, 'bo', label='Vehicle') # vehicles always at origin in waypoints frame!
                 wx = [wp[0] for wp in next_waypoints]
                 wy = [wp[1] for wp in next_waypoints]
-                ax.plot(wy, wx, 'ro', label='Waypoints') # reverse x/y to show 0 deg as up
+                if turn == "left":
+                    color = 'ro' # left --> red
+                elif turn == "right":
+                    color = 'go' # right --> green
+                else:
+                    color = 'yo' # straight --> yellow
+                ax.plot(wy, wx, color, label='Waypoints') # reverse x/y to show 0 deg as up
                 ax.legend()
                 for i in range(3):
                     if cam_images[i] is not None:
@@ -215,14 +253,15 @@ def main():
             img_path_r = f"data/images/cam2_{frame:06d}.jpg"
 
             # Write CSV row
-            csv_writer.writerow([
-                img_path_l, img_path_c, img_path_r,
-                control.throttle, control.steer,
-                next_waypoints[0][0], next_waypoints[0][1],
-                next_waypoints[1][0], next_waypoints[1][1],
-                next_waypoints[2][0], next_waypoints[2][1],
-                pos_x, pos_y, turn
-            ])
+            if last_reset - frame < 100: # dont write data if we just reset
+                csv_writer.writerow([
+                    img_path_l, img_path_c, img_path_r,
+                    control.throttle, control.steer,
+                    next_waypoints[0][0], next_waypoints[0][1],
+                    next_waypoints[1][0], next_waypoints[1][1],
+                    next_waypoints[2][0], next_waypoints[2][1],
+                    pos_x, pos_y, turn
+                ])
                 
     except KeyboardInterrupt:
         print("Control C received, exiting")
