@@ -42,7 +42,7 @@ class SigLIPPilot(nn.Module):
         # (this is extremely overpowered)
         model_id = "google/siglip-so400m-patch14-384"
         self.vision_model = SiglipVisionModel.from_pretrained(model_id)
-        self.processor = AutoProcessor.from_pretrained(model_id)
+        self.processor = AutoProcessor.from_pretrained(model_id, use_fast=True, do_resize=False)
 
         # init control model
         self.nn6 = nn.Linear(1152, 100) # 1152 is the output embedding size
@@ -54,9 +54,9 @@ class SigLIPPilot(nn.Module):
         # TODO: implement batch. embeddings are weird when batched
 
         # get vision embeddings
-        vision_output = self.model(
+        vision_output = self.vision_model(
             **self.processor(images=x, return_tensors="pt").to("cuda")
-        ).pooler_output
+        ).pooler_output.to("cuda")
 
         y = F.relu(self.nn6(vision_output))
         y = F.relu(self.nn7(y))

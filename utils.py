@@ -91,6 +91,8 @@ class Data():
             train_x[i] = image
             train_y[i] = actuation
 
+        print()
+
         val_x = torch.Tensor(len(val_indices), 3, 66, 200) # NOTE: hardcoded image size
         val_y = torch.Tensor(len(val_indices), 2)
 

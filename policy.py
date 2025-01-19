@@ -9,6 +9,8 @@ from metadrive.policy.manual_control_policy import ManualControlPolicy
 from metadrive.obs.image_obs import *
 from metadrive.engine.engine_utils import *
 
+import time
+
 import torch
 from models import PilotNet
 
@@ -43,15 +45,14 @@ class ModelPolicy(EnvInputPolicy):
         # fix config
         # self.image_obs = ImageStateObservation(control_object.config)
         self.e = get_engine()
+        self.timer = time.time()
 
     def throttle_control(self, model_output):
-        if model_output[1] > 0.5:
-            return model_output[1]
-        elif model_output[1] < -0.5:
-            return 0.25
+        if time.time() - self.timer > 2.0:
+            return 0.3
         else:
-            return 0
-
+            return model_output[1]
+            
     def act(self, agent_id):
         # Get the observation from the environment
         # print(type(self.control_object))
