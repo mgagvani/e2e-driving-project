@@ -18,7 +18,7 @@ def main_PilotNet():
     print("Using device: ", torch.cuda.get_device_name(), " with properties: ", torch.cuda.get_device_properties(device))
     
     from utils import Data, DKData, CarlaData
-    from models import MultiCamWaypointNet
+    from models import SplitCamWaypointNet
 
     args = sys.argv[1:]
     if len(args) == 0:
@@ -29,7 +29,7 @@ def main_PilotNet():
         data = CarlaData()
 
     indices = data.balanced_indices()
-    indices = indices[:40_000]
+    indices = indices[:15_000]
     train_idx = indices[:int(len(indices) * 0.8)]
     val_idx = indices[int(len(indices) * 0.8):]
 
@@ -38,10 +38,12 @@ def main_PilotNet():
     data_filter = lambda x: abs(x[1]) > 0.2
     use_filter = False
 
-    model = MultiCamWaypointNet().to(device)
+    model = SplitCamWaypointNet(return_split_heads=True).to(device)
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     criterion = nn.MSELoss()
+    lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=5, factor=0.5, verbose=True)
+    aux_weight = 0.1
 
     losses, train_losses, skipped_vals = [], [], []
     best_loss = float("inf")
@@ -55,11 +57,16 @@ def main_PilotNet():
             except Exception as e:
                 skipped_vals.append(curr_y)
                 continue
-            out = model(curr_x.unsqueeze(0))
+            out, o_l, o_c, o_r = model(curr_x.unsqueeze(0))
             loss = criterion(out, curr_y.unsqueeze(0))
+            # aux losses
+            loss += aux_weight * criterion(o_l, curr_y.unsqueeze(0))
+            loss += aux_weight * criterion(o_c, curr_y.unsqueeze(0))
+            loss += aux_weight * criterion(o_r, curr_y.unsqueeze(0))
             avg_train_loss += loss.item()
             loss.backward()
             optimizer.step()
+            lr_scheduler.step(loss)
 
         train_losses.append(avg_train_loss / len(train_idx))
 
@@ -72,13 +79,13 @@ def main_PilotNet():
                 except Exception as e:
                     skipped_vals.append(val_y)
                     continue
-                out = model(val_x.unsqueeze(0))
+                out, _, _, _ = model(val_x.unsqueeze(0))
                 avg_loss += criterion(out, val_y.unsqueeze(0))
             losses.append(avg_loss.item() / len(val_idx))
             if losses[-1] < best_loss:
                 best_loss = losses[-1]
                 print(f"Saving model with VAL loss {best_loss}")
-                torch.save(model.state_dict(), "model.pth")
+                torch.save(model.state_dict(), "model_new.pth")
 
         print(f"Epoch {epoch}, TRAIN loss: {train_losses[-1]}, VAL loss: {losses[-1]}")
 

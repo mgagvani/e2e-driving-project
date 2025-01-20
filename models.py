@@ -122,10 +122,13 @@ class MultiCamWaypointNet(nn.Module):
         return x
 
 class SplitCamWaypointNet(nn.Module):
-    def __init__(self, drop=0.5):
+    def __init__(self, drop=0.5, return_split_heads=False, return_gates=False):
         super().__init__()
         self.act = nn.LeakyReLU
         self.drop = drop
+
+        self.return_split_heads = return_split_heads
+        self.return_gates = return_gates
 
         # 3 feature extractors for each cam (shape 3, 168, 224)
         def make_extractor():
@@ -174,7 +177,7 @@ class SplitCamWaypointNet(nn.Module):
             nn.Linear(64, 8)
         )
 
-    def forward(self, x, return_split_heads=True, return_gates=True):
+    def forward(self, x):
         # x shape: (B, 3, 168, 3*224)
         # Split into left, center, right chunks (width 224 each)
         x_left   = x[:, :, :, 0:224]
@@ -205,11 +208,11 @@ class SplitCamWaypointNet(nn.Module):
         out = self.final_fc(fused_feats)  # shape (B, 8)
 
         # Optionally return heads' predictions and gating weights
-        if return_split_heads or return_gates:
+        if self.return_split_heads or self.return_gates:
             results = [out]
-            if return_split_heads:
+            if self.return_split_heads:
                 results += [pred_left, pred_center, pred_right]
-            if return_gates:
+            if self.return_gates:
                 results += [gating_weights]
             return results
 

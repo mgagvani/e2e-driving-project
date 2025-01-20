@@ -17,6 +17,7 @@ import sys, time
 from models import *
 
 # plt.switch_backend('Agg')
+plt.style.use('seaborn-v0_8-talk')
 
 class Data():
     def __init__(self, path="data", load=True):
@@ -364,7 +365,7 @@ def test_model(model_pth, data_pth, dk):
 
 @torch.no_grad()
 def test_waypoint_model(model_pth, data_pth):
-    model = MultiCamWaypointNet(drop=0.0)
+    model = SplitCamWaypointNet(drop=0.0, return_split_heads=True, return_gates=True)
     model.load_state_dict(torch.load(model_pth))
     model = model.to("cuda")
     model.eval()
@@ -374,11 +375,14 @@ def test_waypoint_model(model_pth, data_pth):
     pred_y = []
     x = []
 
-    # to choose subset of data
-    # data.data = data.data[2560:4096]
-    data.data = data.data[(data.data['turntype'] == 'left') | (data.data['turntype'] == 'right')]
+    pred_l, pred_c, pred_r = [], [], []
+    pred_gates = []
 
-    BATCH_SIZE = 1024
+    # to choose subset of data
+    data.data = data.data[(data.data['turntype'] == 'left') | (data.data['turntype'] == 'right')]
+    data.data = data.data[2560:4096]
+
+    BATCH_SIZE = 512
     chunk_ends = [i for i in range(0, len(data), BATCH_SIZE)]
     chunk_ends.append(len(data))
 
@@ -397,9 +401,13 @@ def test_waypoint_model(model_pth, data_pth):
         images = torch.stack(images).to("cuda")
         ground_truths = torch.stack(ground_truths)
         # old code: actually inference
-        out = model.forward(images)
+        out, o_l, o_c, o_r, gating = model.forward(images)
         for i, out in enumerate(out):
             pred_y.append(out)
+            pred_l.append(o_l[i])
+            pred_c.append(o_c[i])
+            pred_r.append(o_r[i])
+            pred_gates.append(gating[i])
             true_y.append(ground_truths[i])
             x.append(i + bucket[0])
     t1 = time.perf_counter()
@@ -424,8 +432,15 @@ def test_waypoint_model(model_pth, data_pth):
     
     for i in range(len(x)):
         image = data[i][0]
-        pred_vals = pred_y[i].cpu().detach().numpy()
-        gt_vals = true_y[i]
+        # print(i, type(pred_y[i]), type(pred_y), type(pred_l), type(pred_l[i]))
+        if i == 0:
+            pred_vals = pred_y[i].cpu().detach().numpy()
+            pred_l = pred_l[i].cpu().detach().numpy()
+            pred_c = pred_c[i].cpu().detach().numpy()
+            pred_r = pred_r[i].cpu().detach().numpy()
+            gt_vals = true_y[i]
+        # print(f"{i}, {type(pred_vals)}, {type(true_y)}, {type(pred_l)}, {type(pred_c)}, {type(pred_r)}")
+
 
         # Update camera image subplot
         concat_img = (image.permute(1,2,0).cpu().numpy()*255).astype(np.uint8)
@@ -455,6 +470,22 @@ def test_waypoint_model(model_pth, data_pth):
             [pred_vals[3], pred_vals[5], pred_vals[7]],
             [pred_vals[2], pred_vals[4], pred_vals[6]], 'r-x', label='Predicted',
             alpha=0.75
+        )
+        # plot other 3 as well
+        ax_way.plot(
+            [pred_l[3], pred_l[5], pred_l[7]],
+            [pred_l[2], pred_l[4], pred_l[6]], '-x', label='Predicted (Left Cam)',
+            alpha=0.5
+        )
+        ax_way.plot(
+            [pred_c[3], pred_c[5], pred_c[7]],
+            [pred_c[2], pred_c[4], pred_c[6]], '-x', label='Predicted (Center Cam)',
+            alpha=0.5
+        )
+        ax_way.plot(
+            [pred_r[3], pred_r[5], pred_r[7]],
+            [pred_r[2], pred_r[4], pred_r[6]], '-x', label='Predicted (Right Cam)',
+            alpha=0.5
         )
         # parse ground-truth w1, w2, w3
         ax_way.plot(
