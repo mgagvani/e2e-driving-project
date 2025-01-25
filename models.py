@@ -121,6 +121,44 @@ class MultiCamWaypointNet(nn.Module):
         x = self.fc(x)
         return x
 
+class WaypointNet(nn.Module):
+    def __init__(self, drop=0.5):
+        super().__init__()
+        self.act = nn.ReLU
+        self.drop = drop
+
+        # For input shape: (3, 168, 224)
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=5, stride=2),
+            self.act(),
+            nn.Conv2d(32, 64, kernel_size=5, stride=2),
+            self.act(),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(64, 128, kernel_size=3),
+            self.act(),
+            nn.Conv2d(128, 128, kernel_size=3),
+            self.act(),
+            nn.MaxPool2d(2, 2)
+        )
+
+        self.flatten = nn.Flatten()
+        self.fc = nn.Sequential(
+            nn.Dropout(self.drop),
+            nn.Linear(9856, 512),  # Adjust based on final spatial dims
+            self.act(),
+            nn.Linear(512, 256),
+            self.act(),
+            nn.Linear(256, 64),
+            self.act(),
+            nn.Linear(64, 8) # steer, throttle, w1_x, w1_y, w2_x, w2_y, w3_x, w3_y
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.flatten(x)
+        x = self.fc(x)
+        return x
+
 class SplitCamWaypointNet(nn.Module):
     def __init__(self, drop=0.5):
         super().__init__()

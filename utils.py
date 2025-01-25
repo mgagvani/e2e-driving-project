@@ -5,6 +5,8 @@ import torch
 import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+import seaborn as sns
 from torchvision import transforms
 from tqdm import tqdm
 import random
@@ -364,19 +366,36 @@ def test_model(model_pth, data_pth, dk):
 
 @torch.no_grad()
 def test_waypoint_model(model_pth, data_pth):
-    model = MultiCamWaypointNet(drop=0.0)
-    model.load_state_dict(torch.load(model_pth))
-    model = model.to("cuda")
-    model.eval()
+    paths = ["model_l.pth", "model_c.pth", "model_r.pth"]
+    models = []
+    for _pth in paths:
+        if not os.path.exists(_pth):
+            raise FileNotFoundError(f"Model {_pth} not found")
+        _model = WaypointNet(drop=0.0)
+        _model.load_state_dict(torch.load(_pth))
+        _model = _model.to("cuda")
+        _model.eval()
+        models.append(_model)
+
+    multi_model = MultiCamWaypointNet(drop=0.0)
+    multi_model.load_state_dict(torch.load(model_pth))
+    multi_model = multi_model.to("cuda")
+    multi_model.eval()
+    
     data = CarlaData(data_pth)
 
     true_y = []
-    pred_y = []
+    pred_y_l = []
+    pred_y_c = []
+    pred_y_r = []
+    pred_y = [pred_y_l, pred_y_c, pred_y_r]
+    pred_y_m = []
     x = []
 
     # to choose subset of data
-    # data.data = data.data[2560:4096]
     data.data = data.data[(data.data['turntype'] == 'left') | (data.data['turntype'] == 'right')]
+    data.data = data.data[3072:4096]
+
 
     BATCH_SIZE = 1024
     chunk_ends = [i for i in range(0, len(data), BATCH_SIZE)]
@@ -385,6 +404,14 @@ def test_waypoint_model(model_pth, data_pth):
     chunks = [i for i in zip(chunk_ends[:-1], chunk_ends[1:])]
 
     idx_buckets = [list(range(a, b)) for a, b in chunks]
+
+    # image (B, 3, 168, 672)
+    crop_left = lambda x: x[:, :, :, 0:224]
+    crop_center = lambda x: x[:, :, :, 224:448]
+    crop_right = lambda x: x[:, :, :, 448:]
+
+    # takes in image (B, 3, 168, 672) and returns 3x (B, 3, 168, 224)
+    crop_all = lambda x: (crop_left(x), crop_center(x), crop_right(x))
 
     t0 = time.perf_counter()
     for bucket in tqdm(idx_buckets, desc="Inference"):
@@ -397,72 +424,109 @@ def test_waypoint_model(model_pth, data_pth):
         images = torch.stack(images).to("cuda")
         ground_truths = torch.stack(ground_truths)
         # old code: actually inference
-        out = model.forward(images)
-        for i, out in enumerate(out):
-            pred_y.append(out)
-            true_y.append(ground_truths[i])
-            x.append(i + bucket[0])
+        outs_m = multi_model.forward(images)
+        images_l, images_c, images_r = crop_all(images)
+        _outs = [model.forward(images) for model, images in zip(models, [images_l, images_c, images_r])]
+        for k, out in enumerate(_outs):
+            for i, out in enumerate(out):
+                pred_y[k].append(out)
+                pred_y_m.append(outs_m[i])
+                true_y.append(ground_truths[i])
+                x.append(i + bucket[0])
     t1 = time.perf_counter()
     print(f"Inference Time per frame: {(t1-t0)/len(data)}")
 
     plt.cla()
+
+    # use seaborn-v0_8-paper
+    plt.style.use('seaborn-v0_8-paper')
+
     input("Enter to start viz")
 
     # subplots.
+    # this is how the subplots were in 590b30e18758c6fe6f5c7781575c07a02eefa3f6 to newest.
     '''
     | imageL | image | imageR | waypoints_pred/true |
     | steer_pred/true-------- | waypoints_pred/true |
     | throttle_pred/true----- | waypoints_pred/true |
     '''
     plt.ion()
-    fig_cam, axs_cam = plt.subplots(1, 3, figsize=(12, 5))
-    img_plot = axs_cam[1].imshow(np.zeros((600, 3*800, 3), dtype=np.uint8))
-    axs_cam[0].axis('off')
-    ax_way = axs_cam[2]
-    ax_act = axs_cam[0]
-    ax_act.axis("off")
+    # fig, _ = plt.subplots(1, 3, figsize=(12, 8))
+    fig = plt.figure(figsize=(12, 8))
+    gs = GridSpec(2, 3, figure=fig, height_ratios=[2,3], width_ratios=[1,1,1])
+
+    cam_ax_left = fig.add_subplot(gs[0, 0])
+    cam_ax_center = fig.add_subplot(gs[0, 1])
+    cam_ax_right = fig.add_subplot(gs[0, 2])
+    img_plots = []
+    for ax in zip([cam_ax_left, cam_ax_center, cam_ax_right], ["Left", "Center", "Right"]):
+        ax, title = ax
+        ax.axis('off')
+        ax.set_title(f"{title} Camera")
+        img_plot = ax.imshow(np.zeros((600, 800, 3)))
+        img_plots.append(img_plot)
+
+
+    ax_left = fig.add_subplot(gs[1, 0])
+    ax_center = fig.add_subplot(gs[1, 1])
+    ax_right = fig.add_subplot(gs[1, 2])
+
+    axs_waypoints = [ax_left, ax_center, ax_right]
+    for ax, title in zip(axs_waypoints, ["Left", "Center", "Right"]):
+        ax.set_title(f"{title}")
+        ax.axis('equal')
+        ax.set_xbound(-50, 50)
+        ax.set_ybound(-50, 50)
     
     for i in range(len(x)):
         image = data[i][0]
-        pred_vals = pred_y[i].cpu().detach().numpy()
+        # pred_vals = pred_y[i].cpu().detach().numpy()
+        pred_vals_l, pred_vals_c, pred_vals_r = [pred_y_k[i].cpu().detach().numpy() for pred_y_k in pred_y]
+        pred_vals_m = pred_y_m[i].cpu().detach().numpy()
         gt_vals = true_y[i]
 
         # Update camera image subplot
         concat_img = (image.permute(1,2,0).cpu().numpy()*255).astype(np.uint8)
-        img_plot.set_data(concat_img)
+        img_l, img_c, img_r = np.split(concat_img, 3, axis=1) # split (600, 2400, 3) --> x3 [ (600, 800, 3)]
+        for img_plot, img in zip(img_plots, [img_l, img_c, img_r]):
+            img_plot.set_data(img)
 
         # Update steering and throttle subplot quiver
-        ax_act.clear()
-        ax_act.axis('equal')
-        ax_act.set_xbound(-1, 1)
-        ax_act.set_ybound(-1, 1)
-        u_pred = pred_vals[0]
-        v_pred = pred_vals[1]
-        u_gt = gt_vals[0]
-        v_gt = gt_vals[1]
-        ax_act.quiver(0, 0, u_pred, v_pred, color='r', label='Predicted', alpha=0.75)
-        ax_act.quiver(0, 0, u_gt, v_gt, color='g', label='Ground Truth', alpha=0.75)
-        ax_act.legend(loc='upper right')
+        # not using this because it's not relevant to the presentation lol
         
         # Clear and plot top-down waypoints
-        ax_way.clear()
-        ax_way.axis('equal')
-        ax_way.set_xbound(-50, 50)
-        ax_way.set_ybound(-50, 50)
-        ax_way.plot(0, 0, 'bo', label='Vehicle')
-        # parse predicted w1, w2, w3
-        ax_way.plot(
-            [pred_vals[3], pred_vals[5], pred_vals[7]],
-            [pred_vals[2], pred_vals[4], pred_vals[6]], 'r-x', label='Predicted',
-            alpha=0.75
-        )
-        # parse ground-truth w1, w2, w3
-        ax_way.plot(
-            [gt_vals[3], gt_vals[5], gt_vals[7]],
-            [gt_vals[2], gt_vals[4], gt_vals[6]], 'g-x', label='Ground Truth',
-            alpha=0.75
-        )
-        ax_way.legend(loc='upper right')
+        for ax_way, (pred_vals, label) in zip(axs_waypoints, zip([pred_vals_l, pred_vals_c, pred_vals_r], ["Left", "Center", "Right"])):
+            ax_way.clear()
+            ax_way.axis('equal')
+            ax_way.set_xbound(-50, 50)
+            ax_way.set_ybound(-50, 50)
+            ax_way.plot(0, 0, 'go', label='Vehicle')
+            # parse predicted w1, w2, w3
+            color = "#DC143C"
+            ax_way.plot(
+                [pred_vals[3], pred_vals[5], pred_vals[7]],  # X values
+                [pred_vals[2], pred_vals[4], pred_vals[6]],  # Y values
+                color=color, marker='x', label=f'Predicted from {label} Cam', alpha=0.75,
+                linewidth=3.0
+            )
+
+            # Optional: Add legend and show plot
+            ax_way.legend()
+            # parse ground-truth w1, w2, w3
+            ax_way.plot(
+                [gt_vals[3], gt_vals[5], gt_vals[7]],
+                [gt_vals[2], gt_vals[4], gt_vals[6]], 'b-x', label='Ground Truth',
+                alpha=0.75
+            )
+
+        for ax_way in axs_waypoints:
+            ax_way.plot(
+                [pred_vals_m[3], pred_vals_m[5], pred_vals_m[7]],  # X values
+                [pred_vals_m[2], pred_vals_m[4], pred_vals_m[6]],  # Y values
+                color="black", marker='x', label=f'Predicted using all cameras', alpha=0.75
+            )
+            ax_way.legend(loc='lower right')
+        sns.set_context('talk')
         plt.tight_layout()
         plt.draw()
         plt.pause(0.001)

@@ -18,7 +18,7 @@ def main_PilotNet():
     print("Using device: ", torch.cuda.get_device_name(), " with properties: ", torch.cuda.get_device_properties(device))
     
     from utils import Data, DKData, CarlaData
-    from models import MultiCamWaypointNet
+    from models import WaypointNet
 
     args = sys.argv[1:]
     if len(args) == 0:
@@ -38,10 +38,16 @@ def main_PilotNet():
     data_filter = lambda x: abs(x[1]) > 0.2
     use_filter = False
 
-    model = MultiCamWaypointNet().to(device)
+    model = WaypointNet().to(device)
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     criterion = nn.MSELoss()
+
+    # crop pytorch. either left (0-224), center (224-448), right (448-672)
+    # image is (3, 168, 672)
+    # crop = lambda x: x[:, :, 224:448]
+    # crop = lambda x: x[:, :, 0:224]
+    crop = lambda x: x[:, :, 448:]
 
     losses, train_losses, skipped_vals = [], [], []
     best_loss = float("inf")
@@ -55,6 +61,7 @@ def main_PilotNet():
             except Exception as e:
                 skipped_vals.append(curr_y)
                 continue
+            curr_x = crop(curr_x)
             out = model(curr_x.unsqueeze(0))
             loss = criterion(out, curr_y.unsqueeze(0))
             avg_train_loss += loss.item()
@@ -72,13 +79,14 @@ def main_PilotNet():
                 except Exception as e:
                     skipped_vals.append(val_y)
                     continue
+                val_x = crop(val_x)
                 out = model(val_x.unsqueeze(0))
                 avg_loss += criterion(out, val_y.unsqueeze(0))
             losses.append(avg_loss.item() / len(val_idx))
             if losses[-1] < best_loss:
                 best_loss = losses[-1]
                 print(f"Saving model with VAL loss {best_loss}")
-                torch.save(model.state_dict(), "model.pth")
+                torch.save(model.state_dict(), "model_r.pth")
 
         print(f"Epoch {epoch}, TRAIN loss: {train_losses[-1]}, VAL loss: {losses[-1]}")
 
