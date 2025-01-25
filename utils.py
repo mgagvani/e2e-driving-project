@@ -394,10 +394,10 @@ def test_waypoint_model(model_pth, data_pth):
 
     # to choose subset of data
     data.data = data.data[(data.data['turntype'] == 'left') | (data.data['turntype'] == 'right')]
-    data.data = data.data[3072:4096]
+    data.data = data.data[1024:2048]
 
 
-    BATCH_SIZE = 1024
+    BATCH_SIZE = 384
     chunk_ends = [i for i in range(0, len(data), BATCH_SIZE)]
     chunk_ends.append(len(data))
 
@@ -496,6 +496,7 @@ def test_waypoint_model(model_pth, data_pth):
         
         # Clear and plot top-down waypoints
         for ax_way, (pred_vals, label) in zip(axs_waypoints, zip([pred_vals_l, pred_vals_c, pred_vals_r], ["Left", "Center", "Right"])):
+            print(pred_vals)
             ax_way.clear()
             ax_way.axis('equal')
             ax_way.set_xbound(-50, 50)

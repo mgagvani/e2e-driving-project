@@ -8,11 +8,11 @@ from tqdm import tqdm
 
 from agents.navigation import controller
 
-from models import MultiCamWaypointNet
+from models import MultiCamWaypointNet, WaypointNet
 import torch
 
 WAYPOINT_DIST = 2.0
-TOWN_NAME = 'Town02'
+TOWN_NAME = 'Town01'
 TIMESTEP = 1 / 30.0 
 N_GOALS = 100
 GOAL_THRESH = 4.0
@@ -58,6 +58,11 @@ def model_predict(model):
     global curr_frame
     img = torch.from_numpy(curr_frame).permute(2, 0, 1).unsqueeze(0).float().to('cuda')
     img /= 255.0
+    # crop just the left camera
+    # img = img[:, :, :, :224] # (B, C, H, W)
+    # crop just the center camera
+    # img = img[:, :, :, 224:448]
+    img = img[:, :, :, 448:]
     # get prediction
     pred = model.forward(img)
     return pred
@@ -136,8 +141,8 @@ def main():
         do_viz = args[0] == "viz"
 
     # instantiate model
-    model = MultiCamWaypointNet()
-    model.load_state_dict(torch.load('model.pth'))
+    model = WaypointNet()
+    model.load_state_dict(torch.load('model_r.pth')) # and model_r.pth
     model.to('cuda')
     model.eval()
 
@@ -209,7 +214,7 @@ def main():
     all_crashes = dict()
 
     try:
-        for frame in range(100_000):
+        for frame in range(50_000):
             # step sim - do first to avoid confusion
             world.tick()
 
