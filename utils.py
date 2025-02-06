@@ -393,8 +393,10 @@ def test_waypoint_model(model_pth, data_pth):
     x = []
 
     # to choose subset of data
-    data.data = data.data[(data.data['turntype'] == 'left') | (data.data['turntype'] == 'right')]
-    data.data = data.data[1024:2048]
+    # data.data = data.data[(data.data['turntype'] == 'left') | (data.data['turntype'] == 'right')]
+    # choose only left data
+    data.data = data.data[data.data['turntype'] == 'right']
+    # data.data = data.data[1024:2048]
 
 
     BATCH_SIZE = 384
@@ -427,16 +429,32 @@ def test_waypoint_model(model_pth, data_pth):
         outs_m = multi_model.forward(images)
         images_l, images_c, images_r = crop_all(images)
         _outs = [model.forward(images) for model, images in zip(models, [images_l, images_c, images_r])]
-        for k, out in enumerate(_outs):
-            for i, out in enumerate(out):
-                pred_y[k].append(out)
-                pred_y_m.append(outs_m[i])
-                true_y.append(ground_truths[i])
-                x.append(i + bucket[0])
+        for i in range(len(outs_m)):
+            for k, model_out in enumerate(_outs):
+                pred_y[k].append(model_out[i])
+            pred_y_m.append(outs_m[i])
+            true_y.append(ground_truths[i])
+            x.append(i + bucket[0])
     t1 = time.perf_counter()
     print(f"Inference Time per frame: {(t1-t0)/len(data)}")
 
     plt.cla()
+
+    # compute MSE of predictions
+    mse = lambda pred, true: ((pred - true) ** 2).mean().item()
+
+    stack_l, stack_c, stack_r = [torch.stack(pred_y_k).to("cuda") for pred_y_k in pred_y]
+    stack_true = torch.stack(true_y).to("cuda")
+    stack_m = torch.stack(pred_y_m).to("cuda")
+    
+    # debug print shapes
+    print(f"Shapes: {len(pred_y[0]), len(pred_y[1]), len(pred_y[2]), len(pred_y_m), len(true_y)}")
+    mse_l = mse(stack_l, stack_true)
+    mse_c = mse(stack_c, stack_true)
+    mse_r = mse(stack_r, stack_true)
+    mse_m = mse(stack_m, stack_true)
+
+    print(f"MSE Left: {mse_l}, Center: {mse_c}, Right: {mse_r}, Multi: {mse_m}")
 
     # use seaborn-v0_8-paper
     plt.style.use('seaborn-v0_8-paper')
