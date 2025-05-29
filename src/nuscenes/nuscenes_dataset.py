@@ -73,10 +73,11 @@ class NuScenesDataset(Dataset):
         Get item at the given index
 
         Returns:
-            tuple: (sensor_data, trajectory)
-                - sensor_data: dict of dicts with keys like "CAM_FRONT" containing
+            dict: A dictionary containing:
+                - "sensor_data": dict of dicts with keys like "CAM_FRONT" containing
                   "img", "T_global_to_cam", "intrinsics"
-                - trajectory: future trajectory as numpy array
+                - "trajectory": future trajectory relative to ego vehicle as numpy array (N, 3)
+                - "command": 1x3 one-hot encoded high-level command numpy array
         """
         sample = self.samples[idx]
 
@@ -103,100 +104,136 @@ class NuScenesDataset(Dataset):
             sensor_dict["intrinsics"] = np.array(calibrated_sensor["camera_intrinsic"])
 
             # Get extrinsic transformation matrix (global to camera)
-            rotation = calibrated_sensor["rotation"]
-            translation = calibrated_sensor["translation"]
+            rotation_quat = calibrated_sensor["rotation"]
+            translation_vec = calibrated_sensor["translation"]
 
             # Convert rotation quaternion to rotation matrix
-            rotation_matrix = Quaternion(rotation).rotation_matrix
+            rotation_matrix = Quaternion(rotation_quat).rotation_matrix
 
             # Build the transformation matrix (4x4)
             T_global_to_cam = np.eye(4)
             T_global_to_cam[:3, :3] = rotation_matrix
-            T_global_to_cam[:3, 3] = translation
+            T_global_to_cam[:3, 3] = translation_vec
 
             sensor_dict["T_global_to_cam"] = T_global_to_cam
-
             sensor_data[sensor_name] = sensor_dict
 
-        # Get future trajectory
-        trajectory = self._get_future_trajectory(sample)
+        # Get future trajectory in world frame
+        trajectory_world = self._get_future_trajectory(sample)
 
-        # position at t+1 is position at t, translated.
-        # thus, we want to assume position at t=t0 is origin
-        # and position at t+1 is in the same coordinate system
-        # thus shifting the trajectory to be relative to the first point
-
-        # Get the first point in the trajectory
-        # --- NEW: transform future way-points from world → ego (vehicle) frame ---
+        # Transform future way-points from world to ego vehicle frame
         current_lidar_sd = self.nusc.get("sample_data", sample["data"]["LIDAR_TOP"])
         ego_pose_0 = self.nusc.get("ego_pose", current_lidar_sd["ego_pose_token"])
-        t0 = np.asarray(ego_pose_0["translation"])  # (3,)
-        q0 = Quaternion(ego_pose_0["rotation"])  # ego←world
-        R_world_to_ego = q0.inverse.rotation_matrix  # 3×3
+        t0 = np.asarray(ego_pose_0["translation"])  # Current ego position in world
+        q0 = Quaternion(ego_pose_0["rotation"])  # Current ego orientation in world (ego_frame_to_world)
+        
+        # Rotation matrix to transform from world frame to ego frame
+        R_world_to_ego = q0.inverse.rotation_matrix
 
-        # trajectory is (N,3) in world.  Convert in one shot:
-        trajectory_local = (R_world_to_ego @ (trajectory - t0).T).T  # (N,3)
+        if trajectory_world.size > 0:
+            trajectory_local = (R_world_to_ego @ (trajectory_world - t0).T).T
+        else: # Handle case of empty trajectory_world (e.g., if self.future_steps is 0)
+            trajectory_local = np.empty((0, 3), dtype=np.float32)
+            
         trajectory_local = trajectory_local.astype(np.float32)
 
-        return (sensor_data, trajectory_local)
+        # Determine high-level command
+        # Command is based on displacement at 3 seconds in the future.
+        # Please note this is referenced from AD-MLP paper.
+        # One-hot encoding: [Turn Left, Go Straight, Turn Right]
+        one_hot_command = np.zeros((1, 3), dtype=np.float32)
+
+        if self.future_steps > 0 and trajectory_local.shape[0] > 0:
+            command_time_sec = 3.0
+            # Calculate the target index for the 3-second mark.
+            # Point i (0-indexed) is at time (i+1) / future_hz.
+            # So, for time T, index = T * future_hz - 1.
+            target_idx_for_command = int(command_time_sec * self.future_hz) - 1
+            
+            # Ensure target_idx_for_command is non-negative
+            if target_idx_for_command < 0:
+                target_idx_for_command = 0
+
+            # Use the point at target_idx_for_command, or the last available point if shorter.
+            actual_idx = min(target_idx_for_command, trajectory_local.shape[0] - 1)
+
+            # Lateral displacement is the y-coordinate in the ego frame.
+            # Assumes +y is to the left in ego frame.
+            lateral_displacement = trajectory_local[actual_idx, 1]
+
+            if lateral_displacement > 2.0:  # Turn Left
+                one_hot_command[0, 0] = 1.0
+            elif lateral_displacement < -2.0:  # Turn Right
+                one_hot_command[0, 2] = 1.0
+            else:  # Go Straight
+                one_hot_command[0, 1] = 1.0
+        else:
+            # Default to "Go Straight" if no future trajectory is available
+            one_hot_command[0, 1] = 1.0
+            
+        output = {
+            "sensor_data": sensor_data,
+            "trajectory": trajectory_local,
+            "command": one_hot_command,
+        }
+
+        return output
 
     def _get_future_trajectory(self, sample):
         """
-        Extract the future trajectory of the ego vehicle
+        Extract the future trajectory of the ego vehicle in the world frame.
 
         Args:
             sample: Current sample
 
         Returns:
-            np.ndarray: Array of shape (num_future_points, 3) containing future positions
+            np.ndarray: Array of shape (num_future_points, 3) containing future positions (x,y,z)
+                        in the world frame. Returns an empty array of shape (0,3) if no future
+                        points can be determined (e.g. self.future_steps is 0).
         """
-        # Get the current sample and timestamp
-        current_sample = sample
-        current_timestamp = current_sample["timestamp"]
+        if self.future_steps == 0:
+            return np.empty((0, 3), dtype=np.float32)
 
-        # Get current ego pose
-        current_ego_pose = self.nusc.get(
-            "ego_pose",
-            self.nusc.get("sample_data", current_sample["data"]["LIDAR_TOP"])[
-                "ego_pose_token"
-            ],
-        )
+        trajectory_points = []
+        current_sample_token = sample["token"]
 
-        # Initialize trajectory array
-        trajectory = []
+        # Iterate through future samples
+        num_points_collected = 0
+        while num_points_collected < self.future_steps:
+            if not sample["next"]: # No more samples
+                break
+            
+            sample = self.nusc.get("sample", sample["next"])
+            sample_data_lidar = self.nusc.get("sample_data", sample["data"]["LIDAR_TOP"])
+            ego_pose = self.nusc.get("ego_pose", sample_data_lidar["ego_pose_token"])
+            
+            # Check if timestamps align with desired frequency (approximate)
+            # This loop structure tries to get `self.future_steps` points.
+            # For simplicity with the problem statement's fixed hz, we assume each 'next' sample
+            # can be used, and rely on `self.future_steps` to cap.
+            # A more robust implementation might check timestamps more carefully against `self.future_hz`.
+            
+            trajectory_points.append(ego_pose["translation"])
+            num_points_collected += 1
 
-        # Get future samples
-        sample_token = current_sample["next"]
-        while len(trajectory) < self.future_steps and sample_token != "":
-            # Get next sample
-            next_sample = self.nusc.get("sample", sample_token)
-
-            # Get ego pose for next sample
-            ego_pose = self.nusc.get(
-                "ego_pose",
-                self.nusc.get("sample_data", next_sample["data"]["LIDAR_TOP"])[
-                    "ego_pose_token"
-                ],
-            )
-
-            # Extract position
-            position = np.array(ego_pose["translation"])
-            trajectory.append(position)
-
-            # Move to next sample
-            sample_token = next_sample["next"]
-
-        # If we don't have enough future points, pad with the last position
-        if trajectory:
-            last_pos = trajectory[-1]
-            while len(trajectory) < self.future_steps:
-                trajectory.append(last_pos.copy())
+        # If not enough future points were found, pad with the last known position
+        if trajectory_points:
+            last_pos = np.array(trajectory_points[-1])
+            while len(trajectory_points) < self.future_steps:
+                trajectory_points.append(last_pos.copy())
         else:
-            # If we have no future points, use the current position
+            # If no future points at all (e.g., end of a scene and self.future_steps > 0)
+            # Pad with the current position.
+            current_lidar_sd = self.nusc.get("sample_data", self.samples[self.__len__()-1 if sample["token"] == self.samples[self.__len__()-1]["token"] else 0]["data"]["LIDAR_TOP"]) # A bit hacky way to get a current sample if original 'sample' was already the last one
+            # This fallback for 'current_pos' if trajectory_points is empty needs to be robust.
+            # Using the initial sample's ego pose for this case.
+            initial_sample_lidar_sd = self.nusc.get("sample_data", self.nusc.get("sample", current_sample_token)["data"]["LIDAR_TOP"])
+            current_ego_pose = self.nusc.get("ego_pose", initial_sample_lidar_sd["ego_pose_token"])
             current_pos = np.array(current_ego_pose["translation"])
-            trajectory = [current_pos] * self.future_steps
-
-        return np.array(trajectory)
+            for _ in range(self.future_steps):
+                trajectory_points.append(current_pos.copy())
+                
+        return np.array(trajectory_points, dtype=np.float32)
 
     def project_traj_on_img(self, traj, img, cam_intrinsic, T_global_to_cam):
         """
