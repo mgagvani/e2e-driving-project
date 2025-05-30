@@ -1,4 +1,5 @@
 import os
+from functools import cache
 
 import cv2
 import matplotlib.pyplot as plt
@@ -57,7 +58,7 @@ def locate_message(utimes, utime):
 
 class NuScenesDataset(Dataset):
     def __init__(
-        self, nuscenes_path, version="v1.0-mini", future_seconds=3.0, future_hz=2, past_frames=4, split="train"
+        self, nuscenes_path, version="v1.0-mini", future_seconds=3.0, future_hz=2, past_frames=4, split="train", get_img_data=True
     ):
         """
         Initialize the NuScenes dataset
@@ -78,6 +79,7 @@ class NuScenesDataset(Dataset):
         self.future_hz = future_hz
         self.future_steps = int(future_seconds * future_hz)
         self.past_frames = past_frames
+        self.get_img_data = get_img_data
         
         # Filter samples by split
         self.scenes = self._get_scenes()
@@ -134,6 +136,7 @@ class NuScenesDataset(Dataset):
         """Return the number of samples in the dataset"""
         return len(self.samples)
 
+    @cache # cache so we don't recompute for every call asking for the same index
     def __getitem__(self, idx):
         """
         Get item at the given index
@@ -150,42 +153,45 @@ class NuScenesDataset(Dataset):
         """
         sample = self.samples[idx]
 
-        # Collect sensor data
-        sensor_data = {}
-        for sensor_name, sensor_token in sample["data"].items():
-            # Only process camera sensors
-            if "CAM" not in sensor_name:
-                continue
+        if self.get_img_data:
+            # Collect sensor data
+            sensor_data = {}
+            for sensor_name, sensor_token in sample["data"].items():
+                # Only process camera sensors
+                if "CAM" not in sensor_name:
+                    continue
 
-            sensor_dict = {}
-            sensor_sample_data = self.nusc.get("sample_data", sensor_token)
+                sensor_dict = {}
+                sensor_sample_data = self.nusc.get("sample_data", sensor_token)
 
-            # Get image
-            img_path = os.path.join(self.nusc.dataroot, sensor_sample_data["filename"])
-            sensor_dict["img"] = np.array(Image.open(img_path))
+                # Get image
+                img_path = os.path.join(self.nusc.dataroot, sensor_sample_data["filename"])
+                sensor_dict["img"] = np.array(Image.open(img_path))
 
-            # Get calibration info
-            calibrated_sensor = self.nusc.get(
-                "calibrated_sensor", sensor_sample_data["calibrated_sensor_token"]
-            )
+                # Get calibration info
+                calibrated_sensor = self.nusc.get(
+                "   calibrated_sensor", sensor_sample_data["calibrated_sensor_token"]
+                )
 
-            # Get intrinsic matrix
-            sensor_dict["intrinsics"] = np.array(calibrated_sensor["camera_intrinsic"])
+                # Get intrinsic matrix
+                sensor_dict["intrinsics"] = np.array(calibrated_sensor["camera_intrinsic"])
 
-            # Get extrinsic transformation matrix (global to camera)
-            rotation_quat = calibrated_sensor["rotation"]
-            translation_vec = calibrated_sensor["translation"]
+                # Get extrinsic transformation matrix (global to camera)
+                rotation_quat = calibrated_sensor["rotation"]
+                translation_vec = calibrated_sensor["translation"]
 
-            # Convert rotation quaternion to rotation matrix
-            rotation_matrix = Quaternion(rotation_quat).rotation_matrix
+                # Convert rotation quaternion to rotation matrix
+                rotation_matrix = Quaternion(rotation_quat).rotation_matrix
 
-            # Build the transformation matrix (4x4)
-            T_global_to_cam = np.eye(4)
-            T_global_to_cam[:3, :3] = rotation_matrix
-            T_global_to_cam[:3, 3] = translation_vec
+                # Build the transformation matrix (4x4)
+                T_global_to_cam = np.eye(4)
+                T_global_to_cam[:3, :3] = rotation_matrix
+                T_global_to_cam[:3, 3] = translation_vec
 
-            sensor_dict["T_global_to_cam"] = T_global_to_cam
-            sensor_data[sensor_name] = sensor_dict
+                sensor_dict["T_global_to_cam"] = T_global_to_cam
+                sensor_data[sensor_name] = sensor_dict
+        else:
+            sensor_data = {}
 
         # Get future trajectory in world frame
         trajectory_world = self._get_future_trajectory(sample)
