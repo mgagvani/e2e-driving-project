@@ -12,10 +12,12 @@ from __future__ import annotations
 import argparse
 
 import pytorch_lightning as pl
+from pytorch_lightning.loggers import TensorBoardLogger
 import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms as T
 
 
 ###############################################################################
@@ -94,6 +96,12 @@ class LitResNetMLP(pl.LightningModule):
         self.model = model
         self.save_hyperparameters(ignore=["model"])
 
+        # give Lightning an example batch of (img, cmd)
+        self.example_input_array = (
+            torch.zeros(1, 3, 224, 224, dtype=torch.float32),  # a dummy image
+            torch.zeros(1, 3, dtype=torch.float32),            # a dummy command
+        )
+
     # --------------- metrics ---------------
     @staticmethod
     def l2_error(pred: torch.Tensor, gt: torch.Tensor):  # both (B,N,2)
@@ -105,6 +113,34 @@ class LitResNetMLP(pl.LightningModule):
     def collision_rate(pred: torch.Tensor) -> torch.Tensor:
         """Dummy placeholder - returns 0. Replace with proper collision check."""
         return torch.tensor(0.0, device=pred.device)
+    
+    # --------------- optimizers -----------------
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.hparams.lr,
+            weight_decay=self.hparams.weight_decay,  # Added weight decay
+        )
+
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',  # Reduce when validation loss plateaus
+            factor=0.1,  # Reduce learning rate by a factor of 10
+            patience=5,  # Number of epochs with no improvement after which learning rate will be reduced
+            verbose=True,  # Print a message when the learning rate is reduced            
+        )
+
+        monitor = "val_loss"  # Monitor validation loss for scheduler
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+            "scheduler": scheduler,
+            "monitor": monitor,  # Specify the metric to monitor
+            "interval": "epoch",  # Update every epoch
+            "frequency": 1,  # Every epoch
+            },
+        }
 
     # --------------- forward / step ---------------
     def forward(self, img, cmd):
@@ -113,13 +149,19 @@ class LitResNetMLP(pl.LightningModule):
     def _shared_step(self, batch, stage: str):
         img, cmd, gt_wp = batch  # img (B,3,H,W), cmd (B,3), gt (B,N,2)
         pred = self(img, cmd)
-        loss = F.mse_loss(pred, gt_wp)
         l2 = self.l2_error(pred, gt_wp)
+        loss = l2
         coll = self.collision_rate(pred)
-        self.log_dict(
-            {f"{stage}_loss": loss, f"{stage}_l2": l2, f"{stage}_coll": coll},
-            prog_bar=True,
-        )
+    
+        # Log metrics
+        log_dict = {f"{stage}_loss": loss, f"{stage}_l2": l2, f"{stage}_coll": coll}
+    
+        # Log learning rate (only during training)
+        if stage == "train":
+            current_lr = self.trainer.optimizers[0].param_groups[0]['lr']
+            log_dict["lr"] = current_lr
+    
+        self.log_dict(log_dict, prog_bar=True)
         return loss
 
     def training_step(self, batch, _):
@@ -127,9 +169,6 @@ class LitResNetMLP(pl.LightningModule):
 
     def validation_step(self, batch, _):
         self._shared_step(batch, "val")
-
-    def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
 
 ###############################################################################
@@ -157,8 +196,15 @@ def preprocess_img(img_np, hw=(224, 224)):
     y1 = 0
     img_cropped = img[:, y1:y1+crop_h, x1:x1+crop_w]
 
+    normalize = T.Normalize(
+        mean=[0.485, 0.456, 0.406], 
+        std=[0.229, 0.224, 0.225]
+    )
+
+    img_normalized = normalize(img_cropped)  # Normalize to ImageNet stats
+
     # Resize cropped region to output size using bicubic interpolation
-    return tv_resize(img_cropped, hw, interpolation=3)  # 3 = bicubic
+    return tv_resize(img_normalized, hw, interpolation=3)  # 3 = bicubic
 
 
 class BaselineCollate:
@@ -210,7 +256,7 @@ if __name__ == "__main__":
     p.add_argument("--nusc_root", default="/scratch/gautschi/mgagvani/nuscenes")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch", type=int, default=32)
-    p.add_argument("--lr", type=float, default=1e-5)
+    p.add_argument("--lr", type=float, default=4e-6)
     p.add_argument("--cam", default="CAM_FRONT")
     args = p.parse_args()
 
@@ -219,12 +265,14 @@ if __name__ == "__main__":
         version="v1.0-trainval",
         future_seconds=3,
         future_hz=1,
+        split="train",
     )
     test_dataset = NuScenesDataset(
-        nuscenes_path=args.nusc_root + "_test",
-        version="v1.0-test",
+        nuscenes_path=args.nusc_root,
+        version="v1.0-trainval",
         future_seconds=3,
         future_hz=1,
+        split="val",
     )
     train_dl = DataLoader(
         train_dataset,
@@ -232,6 +280,9 @@ if __name__ == "__main__":
         shuffle=True,
         num_workers=16,
         collate_fn=make_baseline_collate(hw=(224, 224), cam=args.cam, num_waypoints=3),
+        pin_memory=True,
+        pin_memory_device="cuda",
+        persistent_workers=True,
     )
     val_dl = DataLoader(
         test_dataset,
@@ -239,7 +290,21 @@ if __name__ == "__main__":
         shuffle=False,
         num_workers=16,
         collate_fn=make_baseline_collate(hw=(224, 224), cam=args.cam, num_waypoints=3),
+        pin_memory=True,
+        pin_memory_device="cuda",
+        persistent_workers=True,
     )
+
+    tb_logger = TensorBoardLogger(
+        save_dir="/scratch/gautschi/mgagvani/runs",
+        name="resnet_mlp",
+        default_hp_metric=False,
+        version=None,
+        log_graph=True,
+    )
+
+    lit.hparams.lr = args.lr
+    lit.hparams.weight_decay = 1e-2  # copied from ad_mlp, trainable head is same
 
     pl.Trainer(
         max_epochs=args.epochs,
@@ -248,6 +313,16 @@ if __name__ == "__main__":
         accelerator="gpu",
         log_every_n_steps=10,
         default_root_dir="/scratch/gautschi/mgagvani/runs/resnet_e2e",
+        logger= tb_logger,
+        callbacks=[
+            pl.callbacks.ModelCheckpoint(
+                monitor="val_loss",
+                mode="min",
+                save_top_k=1,
+                dirpath='./',  # save to current dir
+                filename="resnet_mlp-{epoch:02d}-{val_loss:.3f}",
+            ),
+        ],
     ).fit(lit, train_dl, val_dl)
 
-    lit.trainer.save_checkpoint("resnet_mlp.ckpt")
+    # lit.trainer.save_checkpoint("resnet_mlp.ckpt")

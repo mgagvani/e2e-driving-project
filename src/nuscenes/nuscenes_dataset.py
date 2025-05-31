@@ -1,5 +1,6 @@
 import os
 from functools import cache
+from typing import Callable
 
 import cv2
 import matplotlib.pyplot as plt
@@ -15,6 +16,7 @@ from nuscenes.utils.geometry_utils import view_points
 from nuscenes.can_bus.can_bus_api import NuScenesCanBus
 from nuscenes.utils.splits import create_splits_scenes
 
+GET_IMG_DATA = True #  set to false for ad_mlp
 
 # helpers for debugging arbitrary python objects
 def get_type_tree(data):
@@ -55,6 +57,23 @@ def locate_message(utimes, utime):
         i -= 1
     return i
 
+def conditional_decorator(decorator: Callable, condition: bool) -> Callable:
+    """
+    Conditionally apply a decorator based on a boolean condition.
+
+    Args:
+        decorator (Callable): The decorator to apply.
+        condition (bool): If True, apply the decorator; otherwise, return the original function.
+
+    Returns:
+        Callable: The decorated function if condition is True, else the original function.
+    """
+    def wrapper(func):
+        if condition:
+            return decorator(func)
+        return func
+    return wrapper
+
 
 class NuScenesDataset(Dataset):
     def __init__(
@@ -79,7 +98,9 @@ class NuScenesDataset(Dataset):
         self.future_hz = future_hz
         self.future_steps = int(future_seconds * future_hz)
         self.past_frames = past_frames
-        self.get_img_data = get_img_data
+        global GET_IMG_DATA
+        GET_IMG_DATA = get_img_data
+        self.get_img_data = GET_IMG_DATA
         
         # Filter samples by split
         self.scenes = self._get_scenes()
@@ -136,7 +157,8 @@ class NuScenesDataset(Dataset):
         """Return the number of samples in the dataset"""
         return len(self.samples)
 
-    @cache # cache so we don't recompute for every call asking for the same index
+    # only if we don't need image data, cache
+    @conditional_decorator(cache, not GET_IMG_DATA)
     def __getitem__(self, idx):
         """
         Get item at the given index
@@ -170,7 +192,7 @@ class NuScenesDataset(Dataset):
 
                 # Get calibration info
                 calibrated_sensor = self.nusc.get(
-                "   calibrated_sensor", sensor_sample_data["calibrated_sensor_token"]
+                "calibrated_sensor", sensor_sample_data["calibrated_sensor_token"]
                 )
 
                 # Get intrinsic matrix
@@ -262,6 +284,7 @@ class NuScenesDataset(Dataset):
 
         return output
 
+    # @conditional_decorator(cache, GET_IMG_DATA) # cache only if we need image data
     def _get_future_trajectory(self, sample):
         """
         Extract the future trajectory of the ego vehicle in the world frame.
@@ -318,6 +341,7 @@ class NuScenesDataset(Dataset):
                 
         return np.array(trajectory_points, dtype=np.float32)
 
+    # @conditional_decorator(cache, GET_IMG_DATA) # cache only if we need image data
     def _get_past_ego_trajectory(self, sample):
         """
         Extract past ego trajectory (x, y, θ) for the past self.past_frames frames.
@@ -358,6 +382,7 @@ class NuScenesDataset(Dataset):
             
         return np.array(trajectory_points, dtype=np.float32)
 
+    # @conditional_decorator(cache, GET_IMG_DATA) # cache regardless of GET_IMG_DATA
     def _get_ego_velocity(self, sample):
         """
         Extract ego velocity (vx, vy, ω) from CAN bus pose messages.
@@ -394,6 +419,7 @@ class NuScenesDataset(Dataset):
         except Exception:
             return np.zeros(3, dtype=np.float32)
 
+    # @conditional_decorator(cache, GET_IMG_DATA) # cache regardless of GET_IMG_DATA
     def _get_ego_acceleration(self, sample):
         """
         Extract ego acceleration (ax, ay, β) from CAN bus pose messages.
