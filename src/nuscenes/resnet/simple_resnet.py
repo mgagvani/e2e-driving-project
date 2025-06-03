@@ -98,7 +98,7 @@ class LitResNetMLP(pl.LightningModule):
 
         # give Lightning an example batch of (img, cmd)
         self.example_input_array = (
-            torch.zeros(1, 3, 224, 224, dtype=torch.float32),  # a dummy image
+            torch.zeros(1, 3, 448, 448, dtype=torch.float32),  # a dummy image
             torch.zeros(1, 3, dtype=torch.float32),            # a dummy command
         )
 
@@ -127,7 +127,7 @@ class LitResNetMLP(pl.LightningModule):
             mode='min',  # Reduce when validation loss plateaus
             factor=0.1,  # Reduce learning rate by a factor of 10
             patience=5,  # Number of epochs with no improvement after which learning rate will be reduced
-            verbose=True,  # Print a message when the learning rate is reduced            
+            # verbose=True,  # Print a message when the learning rate is reduced            
         )
 
         monitor = "val_loss"  # Monitor validation loss for scheduler
@@ -244,7 +244,7 @@ if __name__ == "__main__":
     from nuscenes_dataset import NuScenesDataset
 
     model = ResNetMLPBaseline(
-        model_name="resnet34.a1_in1k",
+        model_name="timm/eva02_base_patch14_448.mim_in22k_ft_in22k_in1k",
         pretrained=True,
         cmd_dim=3,
         hidden_dim=512,
@@ -279,7 +279,7 @@ if __name__ == "__main__":
         batch_size=args.batch,
         shuffle=True,
         num_workers=16,
-        collate_fn=make_baseline_collate(hw=(224, 224), cam=args.cam, num_waypoints=3),
+        collate_fn=make_baseline_collate(hw=(448, 448), cam=args.cam, num_waypoints=3),
         pin_memory=True,
         pin_memory_device="cuda",
         persistent_workers=True,
@@ -289,7 +289,7 @@ if __name__ == "__main__":
         batch_size=args.batch,
         shuffle=False,
         num_workers=16,
-        collate_fn=make_baseline_collate(hw=(224, 224), cam=args.cam, num_waypoints=3),
+        collate_fn=make_baseline_collate(hw=(448, 448), cam=args.cam, num_waypoints=3),
         pin_memory=True,
         pin_memory_device="cuda",
         persistent_workers=True,
