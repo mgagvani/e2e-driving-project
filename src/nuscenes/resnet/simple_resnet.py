@@ -86,6 +86,37 @@ class ResNetMLPBaseline(nn.Module):
         out = self.head(x)  # (B, N*2)
         return out.view(out.size(0), self.num_waypoints, 2)  # (B,N,2)
 
+class SimpleMultiCam(nn.Module):
+    """multi camera"""
+
+    def __init__(
+        self,
+        model_name: str = "resnet18",
+        pretrained: bool = True,
+        cmd_dim: int = 3,
+        hidden_dim: int = 256,
+        num_waypoints: int = 12,
+        ncams: int = 6
+    ):
+        super().__init__()
+        self.backbone = ResNetBackbone(model_name, pretrained) # shared across cameras since its frozen
+        in_dim = self.backbone.out_dim * ncams + cmd_dim
+        self.head = WaypointMLP(in_dim, hidden_dim, num_waypoints)
+        self.num_waypoints = num_waypoints
+
+    def forward(
+        self, imgs: torch.Tensor, cmd: torch.Tensor
+    ):
+        """imgs: (B, ncams, 3, H, W)  cmd: (B,3)"""
+        B, ncams, C, H, W = imgs.shape
+        imgs = imgs.view(B * ncams, C, H, W)
+        feat = self.backbone(imgs)  # (B*ncams, F)
+        feat = feat.view(B, ncams, -1).view(B, -1)  # (B, ncams*F)
+        x = torch.cat([feat, cmd], dim=-1)  # (B, ncams*F+3)
+        out = self.head(x)  # (B, N*2)
+        return out.view(out.size(0), self.num_waypoints, 2)  # (B,N,2)
+        
+
 
 ###############################################################################
 #                             Lightning wrapper                               #
@@ -170,6 +201,15 @@ class LitResNetMLP(pl.LightningModule):
     def validation_step(self, batch, _):
         self._shared_step(batch, "val")
 
+class LitSimpleMultiCam(LitResNetMLP):
+    """Lightning wrapper for the multi-camera ResNetMLP baseline."""
+    def __init__(self, model: SimpleMultiCam, lr: float = 1e-3):
+        super().__init__(model, lr)
+        self.example_input_array = (
+            torch.zeros(1, 6, 3, 448, 448, dtype=torch.float32),  # a dummy image batch
+            torch.zeros(1, 3, dtype=torch.float32),                # a dummy command
+        )
+
 
 ###############################################################################
 #                     Minimal dataset/collate for baseline                     #
@@ -229,6 +269,38 @@ class BaselineCollate:
 def make_baseline_collate(hw=(224, 224), cam="CAM_FRONT", num_waypoints=6):
     return BaselineCollate(hw, cam, num_waypoints)
 
+class MultiCamCollate:
+    def __init__(self, hw=(224, 224), cams=None, num_waypoints=6):
+        self.hw = hw
+        # default to typical 6 NuScenes cameras if none provided
+        self.cams = cams if cams is not None else [
+            "CAM_FRONT", "CAM_FRONT_LEFT", "CAM_FRONT_RIGHT",
+            "CAM_BACK_LEFT", "CAM_BACK", "CAM_BACK_RIGHT"
+        ]
+        self.num_waypoints = num_waypoints
+
+    def __call__(self, samples):
+        imgs, cmds, wps = [], [], []
+        for sample in samples:
+            sd = sample["sensor_data"]
+            traj = sample["trajectory"]
+            cmd = torch.from_numpy(sample["command"]).squeeze(0).to(dtype=torch.float32)
+            # collect and preprocess each camera image
+            cam_imgs = []
+            for cam in self.cams:
+                img_np = sd[cam]["img"]
+                cam_imgs.append(preprocess_img(img_np, self.hw))
+            # stack cams dimension: (ncams,3,H,W)
+            imgs.append(torch.stack(cam_imgs, dim=0))
+            wps.append(torch.tensor(traj[:self.num_waypoints, :2], dtype=torch.float32))
+            cmds.append(cmd)
+        # batch stack: imgs (B,ncams,3,H,W), cmds (B,3), wps (B,N,2)
+        return (torch.stack(imgs, 0), torch.stack(cmds, 0), torch.stack(wps, 0))
+
+
+def make_multicam_collate(hw=(224, 224), cams=None, num_waypoints=6):
+    return MultiCamCollate(hw, cams, num_waypoints)
+
 
 ###############################################################################
 #                             Quick standalone test                            #
@@ -243,14 +315,14 @@ if __name__ == "__main__":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from nuscenes_dataset import NuScenesDataset
 
-    model = ResNetMLPBaseline(
+    model = SimpleMultiCam(
         model_name="timm/eva02_base_patch14_448.mim_in22k_ft_in22k_in1k",
         pretrained=True,
         cmd_dim=3,
         hidden_dim=512,
         num_waypoints=3,
     )
-    lit = LitResNetMLP(model)
+    lit = LitSimpleMultiCam(model)
 
     p = argparse.ArgumentParser()
     p.add_argument("--nusc_root", default="/scratch/gautschi/mgagvani/nuscenes")
@@ -258,6 +330,7 @@ if __name__ == "__main__":
     p.add_argument("--batch", type=int, default=32)
     p.add_argument("--lr", type=float, default=4e-6)
     p.add_argument("--cam", default="CAM_FRONT")
+    p.add_argument("--cams", nargs='+', default=None, help="list of camera names for multicam collate")
     args = p.parse_args()
 
     train_dataset = NuScenesDataset(
@@ -279,7 +352,7 @@ if __name__ == "__main__":
         batch_size=args.batch,
         shuffle=True,
         num_workers=16,
-        collate_fn=make_baseline_collate(hw=(448, 448), cam=args.cam, num_waypoints=3),
+        collate_fn=make_multicam_collate(hw=(448, 448), cams=args.cams, num_waypoints=3),
         pin_memory=True,
         pin_memory_device="cuda",
         persistent_workers=True,
@@ -289,7 +362,7 @@ if __name__ == "__main__":
         batch_size=args.batch,
         shuffle=False,
         num_workers=16,
-        collate_fn=make_baseline_collate(hw=(448, 448), cam=args.cam, num_waypoints=3),
+        collate_fn=make_multicam_collate(hw=(448, 448), cams=args.cams, num_waypoints=3),
         pin_memory=True,
         pin_memory_device="cuda",
         persistent_workers=True,
@@ -297,7 +370,7 @@ if __name__ == "__main__":
 
     tb_logger = TensorBoardLogger(
         save_dir="/scratch/gautschi/mgagvani/runs",
-        name="resnet_mlp",
+        name="resnet_multi_mlp",
         default_hp_metric=False,
         version=None,
         log_graph=True,
