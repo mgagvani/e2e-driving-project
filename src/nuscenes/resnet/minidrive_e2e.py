@@ -86,34 +86,51 @@ class FEMoE_Expert(nn.Module):
         x_f2 = self.conv(x_f2)
         return x_f2
 
-class SpatialAttentionCompressor(nn.Module):
-    def __init__(self, in_channels):
+# Spatial gate network for multi-camera features
+class SpatialGateNetwork(nn.Module):
+    def __init__(self, in_channels, reduction_ratio=16):
         super().__init__()
-        # Convolution layer to learn attention weights across spatial dimensions
-        # It outputs a single channel map (B, 1, H, W)
-        self.attention_conv = nn.Conv2d(in_channels, 1, kernel_size=1, bias=True)
+        
+        # Channel attention branch - squeeze and excitation style
+        self.channel_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),  # Global average pooling
+            nn.Flatten(),
+            nn.Linear(in_channels, in_channels // reduction_ratio),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_channels // reduction_ratio, in_channels),
+            nn.Sigmoid()
+        )
+        
+        # Spatial attention branch - learn spatial importance
+        self.spatial_gate = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels // reduction_ratio, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels // reduction_ratio, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        # Final compression layer
+        self.compress = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
         
     def forward(self, x):
         # x: (B, C, H, W) input feature map
+        batch_size, channels, height, width = x.shape
         
-        # Generate attention map: (B, 1, H, W)
-        attention_map = self.attention_conv(x)
+        # Channel-wise gating
+        channel_weights = self.channel_gate(x)  # (B, C)
+        channel_weights = channel_weights.view(batch_size, channels, 1, 1)
         
-        # Flatten spatial dimensions of the attention map: (B, 1, H*W)
-        attention_weights_flat = attention_map.view(x.size(0), 1, -1)
+        # Spatial gating
+        spatial_weights = self.spatial_gate(x)  # (B, 1, H, W)
         
-        # Apply softmax over the spatial dimension (H*W) to get normalized weights
-        attention_weights_softmax = F.softmax(attention_weights_flat, dim=-1) # (B, 1, H*W)
+        # Apply both gates
+        gated_features = x * channel_weights * spatial_weights
         
-        # Flatten spatial dimensions of the input feature map x: (B, C, H*W)
-        x_flat_spatial = x.view(x.size(0), x.size(1), -1)
-        
-        # Element-wise multiply input features with attention weights.
-        # Broadcasting attention_weights_softmax (B, 1, H*W) to (B, C, H*W)
-        attended_features = x_flat_spatial * attention_weights_softmax
-        
-        # Sum over the spatial dimension (H*W) to get compressed features
-        compressed_output = torch.sum(attended_features, dim=-1) # (B, C)
+        # Compress to feature vector
+        compressed_output = self.compress(gated_features)  # (B, C)
         
         return compressed_output
 
@@ -126,7 +143,7 @@ class MiniDriveE2E(pl.LightningModule):
 
                  # FE-MoE HParams
                  num_experts=4,
-                 c_f2_expert=16,
+                 c_f2_expert=64,
                  h_f2_expert=28,
                  w_f2_expert=28,
 
@@ -149,8 +166,7 @@ class MiniDriveE2E(pl.LightningModule):
         )
         # Freeze vision encoder parameters
         for param in self.vision_encoder.parameters():
-            param.requires_grad = False
-
+            param.requires_grad = False        
 
         # 2. FE-MoE Gate Network
         gate_cnn_out_h = h_f1 // 2
@@ -176,10 +192,10 @@ class MiniDriveE2E(pl.LightningModule):
             for _ in range(num_experts)
         ])
 
-        # 4. Spatial Attention Compression for each camera's MoE output
-        # One attention module per camera, operating on c_f2_expert channels
-        self.spatial_attentions = nn.ModuleList([
-            SpatialAttentionCompressor(c_f2_expert) for _ in range(num_cameras)
+        # 4. Spatial Gate Networks for each camera's MoE output
+        # One gate network per camera, operating on c_f2_expert channels
+        self.spatial_gates = nn.ModuleList([
+            SpatialGateNetwork(c_f2_expert) for _ in range(num_cameras)
         ])
 
         # 5. Waypoint Prediction Head
@@ -262,8 +278,8 @@ class MiniDriveE2E(pl.LightningModule):
         for i in range(num_cameras):
             # Get features for the i-th camera: (B, C_expert, H_expert, W_expert)
             current_camera_features = v_moe_per_camera_view[:, i, :, :, :]
-            # Apply spatial attention: (B, C_expert)
-            compressed_cam_feat = self.spatial_attentions[i](current_camera_features)
+            # Apply spatial gate network: (B, C_expert)
+            compressed_cam_feat = self.spatial_gates[i](current_camera_features)
             compressed_features_from_each_camera.append(compressed_cam_feat)
 
         # Concatenate compressed features from all cameras along the channel dimension
@@ -417,7 +433,7 @@ if __name__ == "__main__":
     parser.add_argument("--c_f1", type=int, default=128, help="Vision encoder output channels")
     parser.add_argument("--h_f1", type=int, default=14, help="Vision encoder output height")
     parser.add_argument("--w_f1", type=int, default=14, help="Vision encoder output width")
-    parser.add_argument("--c_f2_expert", type=int, default=16, help="Expert output channels")
+    parser.add_argument("--c_f2_expert", type=int, default=64, help="Expert output channels")
     parser.add_argument("--h_f2_expert", type=int, default=28, help="Expert output height")
     parser.add_argument("--w_f2_expert", type=int, default=28, help="Expert output width")
     parser.add_argument("--mlp_hidden_dim", type=int, default=512, help="MLP hidden dimension")
