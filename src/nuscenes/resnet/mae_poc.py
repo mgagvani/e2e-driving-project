@@ -319,7 +319,7 @@ def main():
         devices=-1,
         logger=logger,
         callbacks=[checkpoint],
-        log_every_n_steps=50,
+        log_every_n_steps=5,
         strategy=DDPStrategy(find_unused_parameters=True) if torch.cuda.device_count() > 1 else None,
     )
     trainer.fit(model, train_dl, val_dl)

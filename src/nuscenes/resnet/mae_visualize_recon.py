@@ -36,7 +36,7 @@ import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 
-from mae_poc import LitMAE, CollateFrontCam, preprocess
+from mae_poc import LitMAE, CollateFrontCam
 from nuscenes_dataset import NuScenesDataset
 
 # ------------------------------------------------------------------
@@ -146,7 +146,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model: LitMAE = LitMAE.load_from_checkpoint(args.ckpt, map_location=device)
     model.eval().to(device)
-    mae = model.net
+    mae = model
     mae.mask_ratio = args.mask_ratio
 
     ds = NuScenesDataset(args.nusc_root, split="val", version="v1.0-trainval",
