@@ -2,7 +2,7 @@
 Simple trajectory baseline for NuScenes
 ============================================================================
 * **Backbone:** pre -trained ResNet from timm (`resnet18` by default).
-* **Head:** 2 -layer MLP that takes `[vision_features ‖ command]` → flattened way -points.
+* **Head:** 2 -layer MLP that takes `[vision_features ??? command]` ??? flattened way -points.
 * **Loss:** L2 on way -points.  Metrics: mean L2 and collision -rate stub.
 
 """
@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.strategies import DDPStrategy
 import timm
 import torch
 import torch.nn as nn
@@ -46,7 +48,7 @@ class ResNetBackbone(nn.Module):
 
 
 class WaypointMLP(nn.Module):
-    """Very small MLP: (feat+cmd) → flattened way -points (N_pts×2)."""
+    """Very small MLP: (feat+cmd) ??? flattened way -points (N_pts??2)."""
 
     def __init__(self, in_dim: int, hidden_dim: int, num_waypoints: int):
         super().__init__()
@@ -62,7 +64,7 @@ class WaypointMLP(nn.Module):
 
 
 class ResNetMLPBaseline(nn.Module):
-    """Full baseline: image → features; concat command → way -points."""
+    """Full baseline: image ??? features; concat command ??? way -points."""
 
     def __init__(
         self,
@@ -115,6 +117,52 @@ class SimpleMultiCam(nn.Module):
         x = torch.cat([feat, cmd], dim=-1)  # (B, ncams*F+3)
         out = self.head(x)  # (B, N*2)
         return out.view(out.size(0), self.num_waypoints, 2)  # (B,N,2)
+
+
+class MoE(nn.Module):
+    """Mixture-of-Experts model with one expert per camera"""
+    def __init__(self,
+                 backbone_name: str = "resnet18",
+                 pretrained: bool = True,
+                 cmd_dim: int = 3,
+                 hidden_dim: int = 256,
+                 num_waypoints: int = 12,
+                 ncams: int = 6):
+        super().__init__()
+        # one expert per camera
+        self.experts = nn.ModuleList([
+            ResNetBackbone(backbone_name, pretrained) for _ in range(ncams)
+        ])
+        feature_dim = self.experts[0].out_dim
+        # gating network consumes command to produce weights per expert
+        self.gating = nn.Sequential(
+            nn.Linear(cmd_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, ncams),
+        )
+        # final head: fused features + command -> waypoints
+        self.head = WaypointMLP(feature_dim + cmd_dim, hidden_dim, num_waypoints)
+        self.num_waypoints = num_waypoints
+
+    def forward(self, imgs: torch.Tensor, cmd: torch.Tensor):
+        # imgs: (B, ncams, 3, H, W), cmd: (B, cmd_dim)
+        B, ncams, C, H, W = imgs.shape
+        # extract features per expert
+        feats = []
+        for i, expert in enumerate(self.experts):
+            feats.append(expert(imgs[:, i]))  # (B, feature_dim)
+        feats = torch.stack(feats, dim=1)      # (B, ncams, feature_dim)
+        # compute gating weights
+        gate_logits = self.gating(cmd)         # (B, ncams)
+        gates = torch.softmax(gate_logits, dim=1).unsqueeze(-1)  # (B, ncams, 1)
+        # fuse features
+        fused = (feats * gates).sum(dim=1)     # (B, feature_dim)
+        # combine with command
+        x = torch.cat([fused, cmd], dim=-1)    # (B, feature_dim+cmd_dim)
+        # predict waypoints
+        out = self.head(x)                     # (B, num_waypoints*2)
+        # reshape flattened waypoints to (B, N, 2)
+        return out.view(out.size(0), self.num_waypoints, 2)
         
 
 
@@ -122,7 +170,7 @@ class SimpleMultiCam(nn.Module):
 #                             Lightning wrapper                               #
 ###############################################################################
 class LitResNetMLP(pl.LightningModule):
-    def __init__(self, model: ResNetMLPBaseline, lr: float = 1e-3):
+    def __init__(self, model: ResNetMLPBaseline, lr: float = 1e-3, weight_decay: float = 1e-2):
         super().__init__()
         self.model = model
         self.save_hyperparameters(ignore=["model"])
@@ -203,25 +251,68 @@ class LitResNetMLP(pl.LightningModule):
 
 class LitSimpleMultiCam(LitResNetMLP):
     """Lightning wrapper for the multi-camera ResNetMLP baseline."""
-    def __init__(self, model: SimpleMultiCam, lr: float = 1e-3):
+    def __init__(self, model: SimpleMultiCam, lr: float = 1e-3, weight_decay: float = 1e-2):
         super().__init__(model, lr)
+        # Override hyperparameters to include weight_decay
+        self.save_hyperparameters(ignore=["model"])
         self.example_input_array = (
             torch.zeros(1, 6, 3, 448, 448, dtype=torch.float32),  # a dummy image batch
             torch.zeros(1, 3, dtype=torch.float32),                # a dummy command
         )
+    
+    def forward(self, imgs, cmd):
+        return self.model(imgs, cmd)
+    
+    def _shared_step(self, batch, stage: str):
+        imgs, cmd, gt_wp = batch  # imgs (B,ncams,3,H,W), cmd (B,3), gt (B,N,2)
+        pred = self(imgs, cmd)
+        l2 = self.l2_error(pred, gt_wp)
+        loss = l2
+        coll = self.collision_rate(pred)
+    
+        # Log metrics
+        log_dict = {f"{stage}_loss": loss, f"{stage}_l2": l2, f"{stage}_coll": coll}
+    
+        # Log learning rate (only during training)
+        if stage == "train":
+            current_lr = self.trainer.optimizers[0].param_groups[0]['lr']
+            log_dict["lr"] = current_lr
+    
+        self.log_dict(log_dict, prog_bar=True)
+        return loss
+
+
+class LitMoE(LitSimpleMultiCam):
+    """Lightning wrapper for the Mixture-of-Experts model"""
+    def __init__(self, model: MoE, lr: float = 1e-3, weight_decay: float = 1e-2):
+        super().__init__(model, lr)
+        # Override hyperparameters to include weight_decay
+        self.save_hyperparameters(ignore=["model"])
+        
+    def configure_optimizers(self):
+        # Use CosineAnnealingLR instead of ReduceLROnPlateau for MoE
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.hparams.lr,
+            weight_decay=self.hparams.weight_decay,
+        )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=self.trainer.max_epochs
+        )
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
 
 ###############################################################################
 #                     Minimal dataset/collate for baseline                     #
 ###############################################################################
 # Assumes your NuScenesDataset (or a thin wrapper) returns:
-#   img_rgb (H×W×3 uint8),  command (3,),  trajectory (N,3) in ego -frame.
+#   img_rgb (H??W??3 uint8),  command (3,),  trajectory (N,3) in ego -frame.
 # We drop Z coordinate and use (x,y).
 
 from torchvision.transforms.functional import resize as tv_resize
 
 
-def preprocess_img(img_np, hw=(224, 224)):
+def preprocess_img(img_np, hw=(448, 448)):
     img = torch.from_numpy(img_np.astype("float32") / 255.0).permute(2, 0, 1)  # (C,H,W)
     H, W = img.shape[1:]
     out_h, out_w = hw
@@ -238,7 +329,7 @@ def preprocess_img(img_np, hw=(224, 224)):
 
     normalize = T.Normalize(
         mean=[0.485, 0.456, 0.406], 
-        std=[0.229, 0.224, 0.225]
+        std=[0.229, 0.448, 0.225]
     )
 
     img_normalized = normalize(img_cropped)  # Normalize to ImageNet stats
@@ -248,7 +339,7 @@ def preprocess_img(img_np, hw=(224, 224)):
 
 
 class BaselineCollate:
-    def __init__(self, hw=(224, 224), cam="CAM_FRONT", num_waypoints=6):
+    def __init__(self, hw=(448, 448), cam="CAM_FRONT", num_waypoints=6):
         self.hw = hw
         self.cam = cam
         self.num_waypoints = num_waypoints
@@ -266,11 +357,11 @@ class BaselineCollate:
         return (torch.stack(imgs,0), torch.stack(cmds,0), torch.stack(wps,0))
 
 
-def make_baseline_collate(hw=(224, 224), cam="CAM_FRONT", num_waypoints=6):
+def make_baseline_collate(hw=(448, 448), cam="CAM_FRONT", num_waypoints=6):
     return BaselineCollate(hw, cam, num_waypoints)
 
 class MultiCamCollate:
-    def __init__(self, hw=(224, 224), cams=None, num_waypoints=6):
+    def __init__(self, hw=(448, 448), cams=None, num_waypoints=6):
         self.hw = hw
         # default to typical 6 NuScenes cameras if none provided
         self.cams = cams if cams is not None else [
@@ -298,7 +389,7 @@ class MultiCamCollate:
         return (torch.stack(imgs, 0), torch.stack(cmds, 0), torch.stack(wps, 0))
 
 
-def make_multicam_collate(hw=(224, 224), cams=None, num_waypoints=6):
+def make_multicam_collate(hw=(448, 448), cams=None, num_waypoints=6):
     return MultiCamCollate(hw, cams, num_waypoints)
 
 
@@ -308,94 +399,80 @@ def make_multicam_collate(hw=(224, 224), cams=None, num_waypoints=6):
 if __name__ == "__main__":
     import os
     import sys
-
+    import argparse
     import numpy as np
-    from torch.utils.data import DataLoader, Dataset
+    from torch.utils.data import DataLoader
 
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from nuscenes_dataset import NuScenesDataset
 
-    model = SimpleMultiCam(
-        model_name="timm/eva02_base_patch14_448.mim_in22k_ft_in22k_in1k",
-        pretrained=True,
-        cmd_dim=3,
-        hidden_dim=512,
-        num_waypoints=3,
-    )
-    lit = LitSimpleMultiCam(model)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", choices=["simple", "moe"], default="simple", help="Model type to train")
+    parser.add_argument("--nusc_root", required=True)
+    parser.add_argument("--backbone", default="timm/eva02_base_patch14_448.mim_in22k_ft_in22k_in1k")
+    parser.add_argument("--pretrained", action="store_true")
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--batch", type=int, default=32)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--hidden_dim", type=int, default=256)
+    parser.add_argument("--num_waypoints", type=int, default=12)
+    parser.add_argument("--ncams", type=int, default=6)
+    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--cams", nargs='+', default=None, help="list of camera names for multicam collate")
+    args = parser.parse_args()
 
-    p = argparse.ArgumentParser()
-    p.add_argument("--nusc_root", default="/scratch/gautschi/mgagvani/nuscenes")
-    p.add_argument("--epochs", type=int, default=50)
-    p.add_argument("--batch", type=int, default=32)
-    p.add_argument("--lr", type=float, default=4e-6)
-    p.add_argument("--cam", default="CAM_FRONT")
-    p.add_argument("--cams", nargs='+', default=None, help="list of camera names for multicam collate")
-    args = p.parse_args()
+    # Create datasets
+    train_ds = NuScenesDataset(args.nusc_root, split="train", version="v1.0-trainval", future_seconds=3, future_hz=1)
+    val_ds = NuScenesDataset(args.nusc_root, split="val", version="v1.0-trainval", future_seconds=3, future_hz=1)
+    
+    collate = make_multicam_collate(hw=(448, 448), cams=args.cams, num_waypoints=args.num_waypoints)
+    train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers, 
+                         collate_fn=collate, pin_memory=True, pin_memory_device="cuda", persistent_workers=True)
+    val_dl = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=args.workers, 
+                       collate_fn=collate, pin_memory=True, pin_memory_device="cuda", persistent_workers=True)
 
-    train_dataset = NuScenesDataset(
-        nuscenes_path=args.nusc_root,
-        version="v1.0-trainval",
-        future_seconds=3,
-        future_hz=1,
-        split="train",
-    )
-    test_dataset = NuScenesDataset(
-        nuscenes_path=args.nusc_root,
-        version="v1.0-trainval",
-        future_seconds=3,
-        future_hz=1,
-        split="val",
-    )
-    train_dl = DataLoader(
-        train_dataset,
-        batch_size=args.batch,
-        shuffle=True,
-        num_workers=16,
-        collate_fn=make_multicam_collate(hw=(448, 448), cams=args.cams, num_waypoints=3),
-        pin_memory=True,
-        pin_memory_device="cuda",
-        persistent_workers=True,
-    )
-    val_dl = DataLoader(
-        test_dataset,
-        batch_size=args.batch,
-        shuffle=False,
-        num_workers=16,
-        collate_fn=make_multicam_collate(hw=(448, 448), cams=args.cams, num_waypoints=3),
-        pin_memory=True,
-        pin_memory_device="cuda",
-        persistent_workers=True,
-    )
+    # Create model based on choice
+    if args.model == "simple":
+        model = SimpleMultiCam(
+            model_name=args.backbone,
+            pretrained=args.pretrained,
+            cmd_dim=3,
+            hidden_dim=args.hidden_dim,
+            num_waypoints=args.num_waypoints,
+            ncams=args.ncams,
+        )
+        lit = LitSimpleMultiCam(model, lr=args.lr)
+        project_name = "simple_multicam"
+    else:  # moe
+        model = MoE(
+            backbone_name=args.backbone,
+            pretrained=args.pretrained,
+            cmd_dim=3,
+            hidden_dim=args.hidden_dim,
+            num_waypoints=args.num_waypoints,
+            ncams=args.ncams,
+        )
+        lit = LitMoE(model, lr=args.lr)
+        project_name = "moe_poc"
 
-    tb_logger = TensorBoardLogger(
-        save_dir="/scratch/gautschi/mgagvani/runs",
-        name="resnet_multi_mlp",
-        default_hp_metric=False,
-        version=None,
-        log_graph=True,
+    # Setup logging and training
+    logger = WandbLogger(project=project_name, log_model=True)
+    checkpoint = ModelCheckpoint(
+        monitor="val_loss",
+        mode="min",
+        save_top_k=1,
+        dirpath="/scratch/gautschi/mgagvani/wandb"
     )
+    strategy = DDPStrategy(find_unused_parameters=True) if torch.cuda.device_count() > 1 else None
 
-    lit.hparams.lr = args.lr
-    lit.hparams.weight_decay = 1e-2  # copied from ad_mlp, trainable head is same
-
-    pl.Trainer(
+    trainer = pl.Trainer(
         max_epochs=args.epochs,
-        precision="32-true",
+        accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=-1,
-        accelerator="gpu",
+        logger=logger,
+        callbacks=[checkpoint],
+        strategy=strategy,
         log_every_n_steps=10,
-        default_root_dir="/scratch/gautschi/mgagvani/runs/resnet_e2e",
-        logger= tb_logger,
-        callbacks=[
-            pl.callbacks.ModelCheckpoint(
-                monitor="val_loss",
-                mode="min",
-                save_top_k=1,
-                dirpath='./',  # save to current dir
-                filename="resnet_mlp-{epoch:02d}-{val_loss:.3f}",
-            ),
-        ],
-    ).fit(lit, train_dl, val_dl)
+    )
+    trainer.fit(lit, train_dl, val_dl)
 
-    # lit.trainer.save_checkpoint("resnet_mlp.ckpt")
