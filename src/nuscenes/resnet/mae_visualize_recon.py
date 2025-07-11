@@ -162,7 +162,7 @@ def main():
         imgs = imgs.to(device)
         
         with torch.no_grad():
-            loss, pred, mask = mae(imgs)
+            losses, pred, mask = mae(imgs)
 
         P, H = mae.patch_size, mae.img_size
 
@@ -209,7 +209,12 @@ def main():
             ax.set_title(title)
             ax.axis("off")
         
-        fig.suptitle(f"Sample {idx:04d} | Loss: {loss.item():.4f} | Mask ratio: {mask0.float().mean():.2f}")
+        total_loss, lpips_loss, mse_loss, l1_loss = losses
+        fig.suptitle(
+            f"Sample {idx:04d} | Total Loss: {total_loss.item():.4f} "
+            f"| LPIPS: {lpips_loss.item():.4f} | MSE: {mse_loss.item():.4f} | L1: {l1_loss.item():.4f} "
+            f"| Mask ratio: {mask0.float().mean():.2f}"
+        )
         fig.tight_layout()
         
         # Save

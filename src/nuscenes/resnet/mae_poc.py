@@ -55,6 +55,12 @@ class MaskedAutoencoderViT(nn.Module):
         ]
         self.decoder = nn.Sequential(*decoder_layers, nn.LayerNorm(embed_dim))
         self.decoder_pred = nn.Linear(embed_dim, self.patch_size * self.patch_size * 3)
+        # Conv-based refiner to smooth and enforce continuity across patch boundaries
+        self.refiner = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=7, padding=3),
+            nn.GELU(),
+            nn.Conv2d(32, 3, kernel_size=7, padding=3),
+        )
 
         # init loss function (LPIPS)
         self.lpips_loss = LearnedPerceptualImagePatchSimilarity(
@@ -183,12 +189,21 @@ class MaskedAutoencoderViT(nn.Module):
         loss = loss.mean(dim=-1)
         mse_loss = (loss * mask).sum() / mask.sum()
 
+        # Compute L1 loss for masked patches
+        l1_loss = (pred - target).abs().mean(dim=-1)
+        l1_loss = (l1_loss * mask).sum() / mask.sum()
+
         # Compute LPIPS loss
-        reconstructed_imgs = torch.clamp(self.unpatchify(pred), 0., 1.)
-        lpips_loss = self.lpips_loss(reconstructed_imgs, imgs)
+        # Unpatchify and clamp initial prediction
+        recon_imgs = torch.clamp(self.unpatchify(pred), 0., 1.)
+        # refine reconstructed image with conv to enforce continuity
+        recon_imgs = self.refiner(recon_imgs)
+        # clamp refined output to [0,1] for LPIPS
+        recon_imgs = torch.clamp(recon_imgs, 0., 1.)
+        lpips_loss = self.lpips_loss(recon_imgs, imgs)
         total_loss = mse_loss + self.lpips_factor * lpips_loss
         
-        return (total_loss, lpips_loss, mse_loss), pred, mask
+        return (total_loss, lpips_loss, mse_loss, l1_loss), pred, mask
 # ---------------------------------------------------------------------------
 # 2.  Lightning wrapper
 # ---------------------------------------------------------------------------
@@ -227,22 +242,38 @@ class LitMAE(MaskedAutoencoderViT, pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         imgs = batch
-        # self(imgs) now calls the inherited forward method
-        losses, _, _ = self(imgs)
-        loss, lpips_loss, mse_loss = losses
+        # schedule mask_ratio: start at 75% of target, increase by 5% per step until target
+        base_ratio = 0.75 * self.hparams.mask_ratio
+        effective_ratio = min(self.hparams.mask_ratio, base_ratio + 0.05 * self.global_step)
+        self.mask_ratio = effective_ratio
+        # log scheduled mask ratio
+        self.log("train_mask_ratio", effective_ratio, prog_bar=False)
+        # forward pass
+        (total_loss, lpips_loss, mse_loss, l1_loss), pred, mask = self(imgs)
+        # compute epoch-based alpha ramp (0→1 over first 40 epochs)
+        alpha = min(1.0, self.current_epoch / 40)
+        # pixel loss: equal weighting of MSE and L1
+        loss_pix = 0.5 * mse_loss + 0.5 * l1_loss
+        # combine pixel and LPIPS losses
+        loss = (1 - 0.2 * alpha) * loss_pix + 0.2 * alpha * lpips_loss
+        # log all metrics
+        self.log("train_alpha", alpha, prog_bar=False)
+        self.log("train_loss_pix", loss_pix, prog_bar=False)
+        self.log("train_lpips_loss", lpips_loss, prog_bar=False)
+        self.log("train_mse_loss", mse_loss, prog_bar=False)
+        self.log("train_l1_loss", l1_loss, prog_bar=False)
         self.log("train_loss", loss, prog_bar=True)
-        self.log("train_lpips_loss", lpips_loss, prog_bar=True)
-        self.log("train_mse_loss", mse_loss, prog_bar=True)
         self.log("lr", self.trainer.optimizers[0].param_groups[0]['lr'], prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         imgs = batch
         losses, _, _ = self(imgs)
-        loss, lpips_loss, mse_loss = losses
+        loss, lpips_loss, mse_loss, l1_loss = losses
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_lpips_loss", lpips_loss, prog_bar=True)
         self.log("val_mse_loss", mse_loss, prog_bar=True)
+        self.log("val_l1_loss", l1_loss, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
