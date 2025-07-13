@@ -77,7 +77,7 @@ def conditional_decorator(decorator: Callable, condition: bool) -> Callable:
 
 class NuScenesDataset(Dataset):
     def __init__(
-        self, nuscenes_path, version="v1.0-mini", future_seconds=3.0, future_hz=2, past_frames=4, split="train", get_img_data=True
+        self, nuscenes_path, version="v1.0-trainval", future_seconds=3.0, future_hz=2, past_frames=4, split="train", get_img_data=True
     ):
         """
         Initialize the NuScenes dataset
@@ -267,6 +267,10 @@ class NuScenesDataset(Dataset):
         else:
             # Default to "Go Straight" if no future trajectory is available
             one_hot_command[0, 1] = 1.0
+
+        # get whether we are at a new sub-scene
+        new_scene = (idx == 0) or \
+                    (sample['scene_token'] != self.samples[idx-1]['scene_token'])
             
         # Get ego states
         ego_trajectory = self._get_past_ego_trajectory(sample)
@@ -280,6 +284,7 @@ class NuScenesDataset(Dataset):
             "ego_trajectory": ego_trajectory,
             "ego_velocity": ego_velocity,
             "ego_acceleration": ego_acceleration,
+            "scene_start": new_scene,
         }
 
         return output

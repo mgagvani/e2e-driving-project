@@ -345,16 +345,23 @@ class BaselineCollate:
         self.num_waypoints = num_waypoints
 
     def __call__(self, samples):
-        imgs, cmds, wps = [], [], []
+        imgs, cmds, wps, scene_starts = [], [], [], []
         for sample in samples:
             sd = sample["sensor_data"]
             traj = sample["trajectory"]
             cmd = torch.from_numpy(sample["command"]).squeeze(0)
             img_np = sd[self.cam]["img"]
+            scene_start = sample.get("scene_start", False)
             imgs.append(preprocess_img(img_np, self.hw))
-            cmds.append(cmd.to(dtype=torch.float32))
+            cmds.append(cmd)
             wps.append(torch.tensor(traj[:self.num_waypoints, :2], dtype=torch.float32))
-        return (torch.stack(imgs,0), torch.stack(cmds,0), torch.stack(wps,0))
+            scene_starts.append(scene_start)
+        return (
+            torch.stack(imgs, 0),
+            torch.stack(cmds, 0),
+            torch.stack(wps, 0),
+            torch.tensor(scene_starts, dtype=torch.bool),
+        )
 
 
 def make_baseline_collate(hw=(448, 448), cam="CAM_FRONT", num_waypoints=6):

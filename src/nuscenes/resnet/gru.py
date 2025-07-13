@@ -7,6 +7,7 @@ import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from collections import deque
 
 # other modules
 from simple_resnet import ResNetBackbone, LitResNetMLP, make_baseline_collate
@@ -20,26 +21,36 @@ class MonocularGRU(nn.Module):
         # features --> gru --> mlp --> output!
 
         self.gru = nn.GRU(
-            input_size = self.feature_extractor.out_dim,
+            input_size = self.feature_extractor.out_dim + cmd_dim,  # ResNet output + command dimension
             hidden_size=gru_hidden_dim,
             num_layers=1,
             batch_first=True,
         )
 
         self.mlp = nn.Sequential(
-            nn.Linear(gru_hidden_dim+cmd_dim, mlp_hidden_dim),
+            nn.Linear(gru_hidden_dim, mlp_hidden_dim),
             nn.ReLU(),
             nn.Linear(mlp_hidden_dim, mlp_hidden_dim),
             nn.ReLU(),
             nn.Linear(mlp_hidden_dim, n_wp * 2)  # each wp is (x, y)
         )
 
-    def forward(self, img: torch.Tensor, cmd: torch.Tensor) -> torch.Tensor:
-        vision_feats = self.feature_extractor(img)  # (B, self.feature_extractor.out_dim)
-        temporal_out, h_n = self.gru(vision_feats.unsqueeze(1))  # (B, 1, gru_hidden_dim)
-        temporal = h_n[-1]  # (B, gru_hidden_dim)
-        mlp_in_feats = torch.cat((temporal, cmd), dim=1)  # (B, gru_hidden_dim + cmd_dim)
-        return self.mlp(mlp_in_feats) 
+        self.register_buffer("h", torch.zeros(1, 1, gru_hidden_dim))  
+
+    @torch.no_grad()
+    def reset_state(self, batch_size=1):
+        self.h = torch.zeros(1, batch_size, self.gru.hidden_size, device=self.h.device)
+
+    def forward(self, img: torch.Tensor, cmd: torch.Tensor, start: torch.Tensor) -> torch.Tensor:
+        # not sure if this is the best strategy. consider that within a batch, how do we enforce the autoregressive nature of the GRU?
+        batch_size = img.shape[0]
+        self.h = torch.zeros(1, batch_size, self.gru.hidden_size, device=img.device)
+
+        vision_feats = self.feature_extractor(img)  # (B, F)
+        x = torch.cat([vision_feats, cmd], dim=-1).unsqueeze(1) # (B, 1, F + cmd_dim)
+        
+        out, self.h = self.gru(x, self.h)  # (B, 1, gru_hidden_dim)
+        return self.mlp(out.squeeze(1))  # (B, n_wp * 2)
     
 class LitMonocularGRU(pl.LightningModule):
     def __init__(self, model: MonocularGRU, lr: float = 1e-3, weight_decay: float = 1e-4):
@@ -52,6 +63,7 @@ class LitMonocularGRU(pl.LightningModule):
         self.example_input_array = (
             torch.zeros(1, 3, 448, 448, dtype=torch.float32),  # a dummy image
             torch.zeros(1, 3, dtype=torch.float32),            # a dummy command
+            torch.zeros(1, dtype=torch.bool)                   # a dummy start flag
         )
 
         self.l2_error = LitResNetMLP.l2_error # same staticmethod
@@ -83,12 +95,13 @@ class LitMonocularGRU(pl.LightningModule):
             },
         }
 
-    def forward(self, img: torch.Tensor, cmd: torch.Tensor) -> torch.Tensor:
-        return self.model(img, cmd)
+    def forward(self, img: torch.Tensor, cmd: torch.Tensor, start: torch.Tensor) -> torch.Tensor:
+        return self.model(img, cmd, start)
     
     def _shared_step(self, batch, stage: str):
-        img, cmd, gt_wp = batch  # img (B,3,H,W), cmd (B,3), gt (B,N,2)
-        pred = self(img, cmd)
+        # batch is currently (img, cmd, gt_wp, scene_start)
+        img, cmd, gt_wp, start = batch  # img (B,3,H,W), cmd (B,3), gt (B,N,2) start (B,)
+        pred = self(img, cmd, start)
         batch = pred.shape[0] 
         n_wp = gt_wp.shape[1]
         pred = pred.view(batch, n_wp, 2)  
