@@ -7,6 +7,8 @@ import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, BatchSampler
+import torchvision.transforms as T
 from collections import deque
 
 # other modules
@@ -35,22 +37,110 @@ class MonocularGRU(nn.Module):
             nn.Linear(mlp_hidden_dim, n_wp * 2)  # each wp is (x, y)
         )
 
-        self.register_buffer("h", torch.zeros(1, 1, gru_hidden_dim))  
+        self.register_buffer("h", torch.zeros(1, 0, gru_hidden_dim)) 
+        self.window = 10
+        self.step = 0
 
     @torch.no_grad()
-    def reset_state(self, batch_size=1):
-        self.h = torch.zeros(1, batch_size, self.gru.hidden_size, device=self.h.device)
+    def _resize_state(self, B, device):
+        if self.h.size(1) != B:                         # ragged batch or first call
+            self.h = torch.zeros(1, B, self.gru.hidden_size, device=device)
+
+    @torch.no_grad()
+    def _mask_beginnings(self, start):
+        if not start.any():
+            return
+
+        # If start is multi-dimensional, reduce to batch dimension
+        if len(start.shape) > 1:
+            batch_mask = start.any(dim=1)
+        else:
+            batch_mask = start
+
+        # Create an index tensor for the batch elements to reset
+        if batch_mask.any():
+            reset_indices = torch.nonzero(batch_mask).squeeze(1)
+            self.h[:, reset_indices, :] = 0.0
 
     def forward(self, img: torch.Tensor, cmd: torch.Tensor, start: torch.Tensor) -> torch.Tensor:
-        # not sure if this is the best strategy. consider that within a batch, how do we enforce the autoregressive nature of the GRU?
-        batch_size = img.shape[0]
-        self.h = torch.zeros(1, batch_size, self.gru.hidden_size, device=img.device)
-
-        vision_feats = self.feature_extractor(img)  # (B, F)
-        x = torch.cat([vision_feats, cmd], dim=-1).unsqueeze(1) # (B, 1, F + cmd_dim)
+        B, T = img.shape[:2]  # Batch size, Sequence length
+        self._resize_state(B, img.device)
+        self._mask_beginnings(start)
         
-        out, self.h = self.gru(x, self.h)  # (B, 1, gru_hidden_dim)
-        return self.mlp(out.squeeze(1))  # (B, n_wp * 2)
+        # Process entire sequence but only keep the final output
+        for t in range(T):
+            if t % self.window == 0:
+                self.h = self.h.detach()
+            
+            vision_feats = self.feature_extractor(img[:, t])
+            x_t = torch.cat([vision_feats, cmd[:, t]], dim=-1).unsqueeze(1)
+            out, self.h = self.gru(x_t, self.h)
+        
+        # Only return the final timestep's prediction
+        return self.mlp(out.squeeze(1))  # (B, n_wp*2)
+    
+class WindowBatchSampler(BatchSampler):
+    def __init__(self, dataset, seq_len=10, stride=1, drop_last=False):
+        self.indices = list(range(len(dataset)))
+        self.seq_len = seq_len
+        self.stride  = stride
+        self.drop_last = drop_last
+
+    def __iter__(self):
+        for start in range(0, len(self.indices) - self.seq_len + 1, self.stride):
+            batch = self.indices[start:start + self.seq_len]
+            yield batch
+
+    def __len__(self):
+        L = (len(self.indices) - self.seq_len) // self.stride + 1
+        return L if not self.drop_last else max(L - 1, 0)
+    
+class SequenceCollate:
+    def __init__(self, hw=(448, 448), cam="CAM_FRONT", num_wps=6):
+        self.hw, self.cam, self.num_wps = hw, cam, num_wps
+        self.normalize = T.Normalize(mean=[0.485,0.456,0.406],
+                                     std=[0.229,0.224,0.225])
+
+    def preprocess_img(self, img_np):
+        img = torch.from_numpy(img_np.astype("float32") / 255.).permute(2,0,1)
+        H,W = img.shape[1:]
+        out_h,out_w = self.hw
+        scale = H / out_h
+        crop_w = int(out_w * scale)
+        x1 = (W - crop_w)//2
+        img = img[:, : , x1:x1+crop_w]                # center crop
+        img = self.normalize(img)
+        return T.functional.resize(img, self.hw, interpolation=3)
+
+    def __call__(self, window_samples):
+        """window_samples is length T list from BatchSampler"""
+        imgs, cmds, wps, start_flags = [], [], [], []
+    
+        # mark first frame in window as episode start
+        for i, sample_data in enumerate(window_samples):
+            # Access sample dictionary without unpacking fixed number of values
+            sample = sample_data  # If this is directly a dict
+        
+            # If sample_data is a tuple/list containing the dict as its last element
+            if isinstance(sample_data, (tuple, list)):
+                sample = sample_data[-1]
+        
+            sd = sample["sensor_data"]
+            traj = sample["trajectory"]
+            cmd = torch.from_numpy(sample["command"]).squeeze(0)
+            img_np = sd[self.cam]["img"]
+
+            imgs.append(self.preprocess_img(img_np))
+            cmds.append(cmd)
+            wps.append(torch.tensor(traj[:self.num_wps, :2], dtype=torch.float32))
+            start_flags.append(i == 0)  # True only for first step
+
+        # stack into (T,C,H,W) then move T to dim1 to get (1,T,C,H,W)
+        imgs = torch.stack(imgs).unsqueeze(0)        # (1,T,C,H,W)
+        cmds = torch.stack(cmds).unsqueeze(0)         # (1,T,3)
+        wps = torch.stack(wps).unsqueeze(0)         # (1,T,N_wp,2)
+        start = torch.tensor(start_flags).unsqueeze(0) # (1,T)
+        return imgs, cmds, wps, start.bool()
     
 class LitMonocularGRU(pl.LightningModule):
     def __init__(self, model: MonocularGRU, lr: float = 1e-3, weight_decay: float = 1e-4):
@@ -61,9 +151,9 @@ class LitMonocularGRU(pl.LightningModule):
         self.hparams.weight_decay = weight_decay
 
         self.example_input_array = (
-            torch.zeros(1, 3, 448, 448, dtype=torch.float32),  # a dummy image
-            torch.zeros(1, 3, dtype=torch.float32),            # a dummy command
-            torch.zeros(1, dtype=torch.bool)                   # a dummy start flag
+            torch.zeros(1, 1, 3, 448, 448, dtype=torch.float32),  # (B,T,C,H,W)
+            torch.zeros(1, 1, 3, dtype=torch.float32),            # (B,T,3)
+            torch.zeros(1, 1, dtype=torch.bool)                   # (B,T)
         )
 
         self.l2_error = LitResNetMLP.l2_error # same staticmethod
@@ -99,24 +189,20 @@ class LitMonocularGRU(pl.LightningModule):
         return self.model(img, cmd, start)
     
     def _shared_step(self, batch, stage: str):
-        # batch is currently (img, cmd, gt_wp, scene_start)
-        img, cmd, gt_wp, start = batch  # img (B,3,H,W), cmd (B,3), gt (B,N,2) start (B,)
-        pred = self(img, cmd, start)
-        batch = pred.shape[0] 
-        n_wp = gt_wp.shape[1]
-        pred = pred.view(batch, n_wp, 2)  
-        l2 = self.l2_error(pred, gt_wp)
+        img, cmd, gt_wp, start = batch  # img: (B,T,C,H,W), cmd: (B,T,3), gt_wp: (B,T,N,2)
+        pred = self(img, cmd, start)    # pred: (B, N*2)
+        
+        # Reshape prediction and get final ground truth waypoints
+        pred = pred.view(-1, gt_wp.shape[2], 2)  # (B, N, 2)
+        gt_final = gt_wp[:, -1, :, :]  # Last timestep's waypoints
+        
+        l2 = self.l2_error(pred, gt_final)
         loss = l2
     
-        # Log metrics
-        log_dict = {f"{stage}_loss": loss, f"{stage}_l2": l2}
-    
-        # Log learning rate (only during training)
-        if stage == "train":
-            current_lr = self.trainer.optimizers[0].param_groups[0]['lr']
-            log_dict["lr"] = current_lr
-    
-        self.log_dict(log_dict, prog_bar=True)
+        self.log_dict({
+            f"{stage}_loss": loss,
+            f"{stage}_l2": l2
+        }, prog_bar=True)
         return loss
 
     def training_step(self, batch, _):
@@ -144,16 +230,31 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
+
     # we keep the number of waypoints fixed at 3 - one per second for the next 3 seconds
     train_ds = NuScenesDataset(args.nusc_root, split="train", version="v1.0-trainval", future_seconds=3, future_hz=1)
     val_ds = NuScenesDataset(args.nusc_root, split="val", version="v1.0-trainval", future_seconds=3, future_hz=1)
 
-    collate = make_baseline_collate(hw=(448, 448), cam="CAM_FRONT", num_waypoints=3)
+    train_sampler = WindowBatchSampler(train_ds, seq_len=10, stride=8, drop_last=True)
+    val_sampler = WindowBatchSampler(val_ds, seq_len=10, stride=8, drop_last=True)
 
-    train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers, 
-                         collate_fn=collate, pin_memory=True, pin_memory_device="cuda", persistent_workers=True)
-    val_dl = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=args.workers, 
-                       collate_fn=collate, pin_memory=True, pin_memory_device="cuda", persistent_workers=True)
+    sequence_collate = SequenceCollate(hw=(448, 448), cam="CAM_FRONT", num_wps=3)
+
+    train_dl = DataLoader(
+        train_ds,
+        batch_sampler=train_sampler,
+        collate_fn=sequence_collate,
+        num_workers=args.workers,
+        pin_memory=True
+    )
+
+    val_dl = DataLoader(
+        val_ds,
+        batch_sampler=val_sampler,
+        collate_fn=sequence_collate,
+        num_workers=args.workers,
+        pin_memory=True
+    )
     
     model = MonocularGRU(feature_extractor=args.backbone, gru_hidden_dim=args.gru_dim, mlp_hidden_dim=args.mlp_dim, cmd_dim=3,
                          n_wp=3)
@@ -179,10 +280,3 @@ if __name__ == "__main__":
         log_every_n_steps=10,
     )
     trainer.fit(lit, train_dl, val_dl)
-
-
-        
-
-
-
-
